@@ -95,4 +95,19 @@ public class AuthServiceImpl implements AuthService {
                 .expiresIn(jwtTokenProvider.getExpirationMs())
                 .build();
     }
+
+    @Override
+    @Transactional
+    public void resetPassword(com.smartbus.dto.request.ResetPasswordRequest request) {
+        // Validate OTP
+        otpService.validatePasswordResetOtp(request.getEmail(), request.getOtp());
+
+        User user = userRepository.findByEmail(request.getEmail().trim().toLowerCase())
+                .orElseThrow(() -> new BadRequestException("No registered account found with email: " + request.getEmail()));
+
+        user.setPassword(passwordEncoder.encode(request.getNewPassword()));
+        userRepository.save(user);
+
+        log.info("Password successfully reset for user: {}", user.getEmail());
+    }
 }

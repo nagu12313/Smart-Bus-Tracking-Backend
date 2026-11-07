@@ -103,4 +103,57 @@ public class OtpService {
         // Remove OTP once consumed by registration
         otpCache.remove(normalizedEmail);
     }
+
+    /**
+     * Generate 6-digit OTP for password reset and email to registered user
+     */
+    public void generateAndSendPasswordResetOtp(String email) {
+        String normalizedEmail = email.trim().toLowerCase();
+
+        if (!userRepository.existsByEmail(normalizedEmail)) {
+            throw new BadRequestException("No registered account found with email: " + normalizedEmail);
+        }
+
+        int code = 100000 + random.nextInt(900000);
+        String otp = String.valueOf(code);
+
+        long expiresAt = System.currentTimeMillis() + OTP_VALIDITY_MS;
+        String cacheKey = "reset:" + normalizedEmail;
+        otpCache.put(cacheKey, new OtpEntry(otp, expiresAt, false));
+
+        log.info("Generated password reset OTP for {}: sending email asynchronously", normalizedEmail);
+        CompletableFuture.runAsync(() -> {
+            try {
+                emailService.sendPasswordResetOtpEmail(normalizedEmail, otp);
+                log.info("Password reset OTP email delivered to SMTP for {}", normalizedEmail);
+            } catch (Exception e) {
+                log.error("Failed to send password reset OTP email to {}: {}", normalizedEmail, e.getMessage());
+            }
+        });
+    }
+
+    /**
+     * Validate that password reset OTP is correct and unexpired
+     */
+    public void validatePasswordResetOtp(String email, String otp) {
+        String normalizedEmail = email.trim().toLowerCase();
+        String cacheKey = "reset:" + normalizedEmail;
+        OtpEntry entry = otpCache.get(cacheKey);
+
+        if (entry == null) {
+            throw new BadRequestException("No password reset code found for this email. Please request a new code.");
+        }
+
+        if (System.currentTimeMillis() > entry.expiresAt()) {
+            otpCache.remove(cacheKey);
+            throw new BadRequestException("Password reset code has expired. Please request a new code.");
+        }
+
+        if (!entry.otp().equals(otp.trim())) {
+            throw new BadRequestException("Invalid reset code. Please enter the correct 6-digit code.");
+        }
+
+        // Consume OTP
+        otpCache.remove(cacheKey);
+    }
 }

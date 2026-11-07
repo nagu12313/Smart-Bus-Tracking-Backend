@@ -55,4 +55,19 @@ public class AuthController {
         return ResponseEntity.status(201)
                 .body(ApiResponse.success("Registration successful", response));
     }
+
+    @PostMapping("/forgot-password")
+    @Operation(summary = "Forgot Password OTP", description = "Send a 6-digit password reset code to registered user email")
+    public ResponseEntity<ApiResponse<String>> forgotPassword(@Valid @RequestBody SendOtpRequest request) {
+        otpService.generateAndSendPasswordResetOtp(request.getEmail());
+        return ResponseEntity.ok(ApiResponse.success(
+                "A password reset code has been sent to " + request.getEmail(), request.getEmail()));
+    }
+
+    @PostMapping("/reset-password")
+    @Operation(summary = "Reset Password", description = "Reset user password with verified 6-digit OTP")
+    public ResponseEntity<ApiResponse<String>> resetPassword(@Valid @RequestBody com.smartbus.dto.request.ResetPasswordRequest request) {
+        authService.resetPassword(request);
+        return ResponseEntity.ok(ApiResponse.success("Password reset successfully. You can now log in with your new password.", request.getEmail()));
+    }
 }

@@ -73,6 +73,57 @@ public class EmailService {
         }
     }
 
+    public void sendPasswordResetOtpEmail(String toEmail, String otp) {
+        try {
+            MimeMessage message = mailSender.createMimeMessage();
+            MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
+
+            helper.setFrom(resolveSender(), "EduTrack Campus Transport");
+            helper.setTo(toEmail);
+            helper.setSubject("EduTrack Password Reset Code: " + otp);
+
+            String html = """
+                <!DOCTYPE html>
+                <html>
+                <head>
+                  <meta charset="utf-8">
+                  <style>
+                    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f8fafc; color: #1e293b; padding: 20px; }
+                    .card { max-width: 500px; margin: 0 auto; background: #ffffff; border-radius: 16px; padding: 32px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); border: 1px solid #e2e8f0; }
+                    .brand { font-size: 20px; font-weight: 800; color: #1d6de5; display: flex; align-items: center; margin-bottom: 24px; }
+                    h2 { font-size: 22px; font-weight: 800; color: #0f172a; margin-top: 0; }
+                    p { font-size: 14px; line-height: 1.6; color: #64748b; margin-bottom: 24px; }
+                    .otp-box { background: #fff1f2; border: 2px dashed #f43f5e; border-radius: 12px; padding: 18px; text-align: center; margin: 24px 0; }
+                    .otp-code { font-size: 32px; font-weight: 800; letter-spacing: 8px; color: #e11d48; font-family: monospace; }
+                    .footer { font-size: 12px; color: #94a3b8; text-align: center; margin-top: 28px; border-top: 1px solid #f1f5f9; padding-top: 16px; }
+                  </style>
+                </head>
+                <body>
+                  <div class="card">
+                    <div class="brand">🚌 EduTrack Transport</div>
+                    <h2>Reset your password</h2>
+                    <p>We received a request to reset your password for your EduTrack account. Use this 6-digit verification code to set your new password:</p>
+                    <div class="otp-box">
+                      <div class="otp-code">%s</div>
+                    </div>
+                    <p style="font-size: 13px; color: #64748b;">This verification code is valid for <strong>10 minutes</strong>. If you did not request a password reset, you can safely ignore this email.</p>
+                    <div class="footer">
+                      EduTrack · Smart School &amp; College Bus Tracking Platform
+                    </div>
+                  </div>
+                </body>
+                </html>
+                """.formatted(otp);
+
+            helper.setText(html, true);
+            mailSender.send(message);
+            log.info("Password reset OTP email sent successfully to {}", toEmail);
+        } catch (Exception e) {
+            log.error("Failed to send password reset email to {}: {}", toEmail, e.getMessage());
+            throw new RuntimeException("Failed to send password reset email: " + e.getMessage(), e);
+        }
+    }
+
     /**
      * Send Administrator Support Tickets Summary Report.
      */
