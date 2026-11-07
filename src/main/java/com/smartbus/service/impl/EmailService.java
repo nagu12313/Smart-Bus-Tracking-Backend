@@ -18,12 +18,16 @@ public class EmailService {
     @Value("${spring.mail.username:bollanagu6868@gmail.com}")
     private String fromEmail;
 
+    private String resolveSender() {
+        return (fromEmail != null && !fromEmail.isBlank()) ? fromEmail.trim() : "bollanagu6868@gmail.com";
+    }
+
     public void sendOtpEmail(String toEmail, String otp) {
         try {
             MimeMessage message = mailSender.createMimeMessage();
             MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
 
-            helper.setFrom(fromEmail, "EduTrack Campus Transport");
+            helper.setFrom(resolveSender(), "EduTrack Campus Transport");
             helper.setTo(toEmail);
             helper.setSubject("EduTrack Verification Code: " + otp);
 
@@ -77,7 +81,7 @@ public class EmailService {
             MimeMessage message = mailSender.createMimeMessage();
             MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
 
-            helper.setFrom(fromEmail, "EduTrack Transport Administration");
+            helper.setFrom(resolveSender(), "EduTrack Transport Administration");
             helper.setTo(toEmail);
             helper.setSubject("📋 EduTrack Admin Support Tickets Report [" + tickets.size() + " Active Tickets]");
 
