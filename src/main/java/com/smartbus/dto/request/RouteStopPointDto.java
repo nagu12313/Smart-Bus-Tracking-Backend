@@ -1,0 +1,18 @@
+package com.smartbus.dto.request;
+
+import lombok.*;
+
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class RouteStopPointDto {
+    private Long id;
+    private String name;
+    private String address;
+    private Double latitude;
+    private Double longitude;
+    private Integer stopOrder;
+    private String arrivalTime;
+}
