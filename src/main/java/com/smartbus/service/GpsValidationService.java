@@ -103,7 +103,23 @@ public class GpsValidationService {
                     .build();
         }
 
-        // 5. Teleportation / Jump Detection
+        // 5. Monotonic Timestamp Check — reject delayed / out-of-order packets older than current position
+        if (previousLocation != null) {
+            LocalDateTime prevGpsTime = previousLocation.getGpsTime() != null
+                    ? previousLocation.getGpsTime()
+                    : previousLocation.getReceivedAt();
+            if (prevGpsTime != null && gpsTime.isBefore(prevGpsTime.minusSeconds(1))) {
+                log.warn("Rejecting delayed/out-of-order GPS packet for bus {}: packet timestamp {} is older than current latest {}",
+                        request.getBusId(), gpsTime, prevGpsTime);
+                return ValidationResult.builder()
+                        .valid(false)
+                        .rejectionReason(String.format("Out-of-order GPS update: packet timestamp %s is older than current latest %s",
+                                gpsTime, prevGpsTime))
+                        .build();
+            }
+        }
+
+        // 6. Teleportation / Jump Detection
         double reportedSpeed = request.getSpeed() != null ? Math.max(0.0, request.getSpeed()) : 0.0;
         double speed = reportedSpeed;
 

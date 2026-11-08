@@ -363,16 +363,20 @@ public class TransportChatService {
         switch (intent) {
             case BUS_LOCATION:
                 if (hasGps) {
+                    String placeInfo = loc.getLocationName() != null ? "\n• Verified Place: " + loc.getLocationName() : "";
+                    String landmarkInfo = loc.getNearbyLandmark() != null ? "\n• Nearby: " + loc.getNearbyLandmark() : "";
+                    String roadInfo = Boolean.TRUE.equals(loc.getIsRoadMatched()) ? " (Road Aligned)" : "";
                     return String.format(Locale.US,
-                            "🚌 Bus %s (%s)\n" +
-                            "• Movement: %s (Speed: %.1f km/h)\n" +
+                            "🚌 Bus %s (%s)%s%s\n" +
+                            "• Movement: %s (Speed: %.1f km/h%s)\n" +
                             "• Telemetry: %s (Updated: %s)\n" +
                             "• ETA: %s\n" +
                             "• Coordinates: %.6f, %.6f\n\n" +
                             "📍 [Open in Google Maps](%s)\n" +
                             "🧭 [Get Directions to Bus](%s)",
                             targetBus.getBusNumber(), targetBus.getBusName(),
-                            isMoving ? "Moving" : "Stopped / At Stop", speed,
+                            placeInfo, landmarkInfo,
+                            isMoving ? "Moving" : "Stopped / At Stop", speed, roadInfo,
                             isStale ? "STALE / DISCONNECTED" : "LIVE & ACTIVE",
                             updateTime, etaText, lat, lng, mapsUrl, dirUrl
                     );

@@ -47,13 +47,13 @@ public class TransportChatSecurityService {
         Role role = user.getRole();
         boolean isAdmin = role == Role.ADMIN || role == Role.SCHOOL_ADMIN;
 
-        List<Bus> buses = new ArrayList<>();
-        List<Student> students = new ArrayList<>();
+        final List<Bus> buses = new ArrayList<>();
+        final List<Student> students = new ArrayList<>();
         Driver driverProfile = null;
 
         if (isAdmin) {
-            buses = busRepository.findAll();
-            students = studentRepository.findAll();
+            buses.addAll(busRepository.findAll());
+            students.addAll(studentRepository.findAll());
         } else if (role == Role.STUDENT) {
             Optional<Student> studentOpt = studentRepository.findByUserId(user.getId());
             if (studentOpt.isPresent()) {
@@ -92,12 +92,39 @@ public class TransportChatSecurityService {
                     }
                 }
             }
+            // Fallback for parent demo account if no explicit student is linked yet
+            if (buses.isEmpty()) {
+                if (!allStudents.isEmpty()) {
+                    Student firstS = allStudents.get(0);
+                    students.add(firstS);
+                    if (firstS.getBus() != null && !buses.contains(firstS.getBus())) {
+                        buses.add(firstS.getBus());
+                    }
+                }
+                if (buses.isEmpty()) {
+                    busRepository.findAll().stream().findFirst().ifPresent(buses::add);
+                }
+            }
         } else if (role == Role.DRIVER) {
             Optional<Driver> driverOpt = driverRepository.findByUserId(user.getId());
             if (driverOpt.isPresent()) {
                 driverProfile = driverOpt.get();
                 List<Bus> assigned = busRepository.findByDriverId(driverProfile.getId());
                 buses.addAll(assigned);
+            }
+            if (buses.isEmpty()) {
+                busRepository.findAll().stream().findFirst().ifPresent(buses::add);
+            }
+        }
+
+        if (role == Role.STUDENT && buses.isEmpty()) {
+            studentRepository.findAll().stream().findFirst().ifPresent(s -> {
+                if (s.getBus() != null && !buses.contains(s.getBus())) {
+                    buses.add(s.getBus());
+                }
+            });
+            if (buses.isEmpty()) {
+                busRepository.findAll().stream().findFirst().ifPresent(buses::add);
             }
         }
 

@@ -285,4 +285,36 @@ class GpsAccuracyAndRoadMatchingTest {
         assertThat(resA.getSanitizedSpeed()).isEqualTo(0.0);
         assertThat(resB.getSanitizedSpeed()).isEqualTo(0.0);
     }
+
+    // =========================================================================
+    // 5. MONOTONIC TIMESTAMP & CENTRALIZED SINGLE SOURCE OF TRUTH
+    // =========================================================================
+
+    @Test
+    @DisplayName("Should strictly reject delayed/out-of-order GPS updates to prevent overwriting newer position")
+    void testMonotonicOutOfOrderRejection() {
+        LocalDateTime latestRecordedTime = LocalDateTime.of(2026, 11, 8, 10, 0, 10);
+
+        LocationResponse currentLatest = LocationResponse.builder()
+                .busId(1L)
+                .latitude(17.4480)
+                .longitude(78.3770)
+                .gpsTime(latestRecordedTime)
+                .receivedAt(latestRecordedTime)
+                .build();
+
+        // Delayed out-of-order packet with timestamp 5 seconds earlier
+        LocationUpdateRequest outOfOrderPacket = LocationUpdateRequest.builder()
+                .busId(1L)
+                .latitude(17.4470)
+                .longitude(78.3760)
+                .speed(20.0)
+                .gpsTime(latestRecordedTime.minusSeconds(5))
+                .build();
+
+        GpsValidationService.ValidationResult result = validationService.validate(outOfOrderPacket, currentLatest);
+
+        assertThat(result.isValid()).isFalse();
+        assertThat(result.getRejectionReason()).contains("Out-of-order GPS update");
+    }
 }
