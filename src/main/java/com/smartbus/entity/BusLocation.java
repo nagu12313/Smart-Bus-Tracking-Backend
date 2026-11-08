@@ -7,8 +7,7 @@ import org.hibernate.annotations.CreationTimestamp;
 import java.time.LocalDateTime;
 
 /**
- * BusLocation — GPS location reading from a physical GPS device.
- * Stored every time the GPS hardware sends a location update.
+ * BusLocation — GPS location reading from physical GPS device or driver mobile tracker.
  */
 @Entity
 @Table(name = "bus_locations", indexes = {
@@ -45,6 +44,23 @@ public class BusLocation {
     /** Compass heading in degrees (0-360) */
     @Column
     private Double heading;
+
+    /** GPS Accuracy radius in meters */
+    @Column
+    @Builder.Default
+    private Double accuracy = 5.0;
+
+    @Column(name = "snapped_latitude")
+    private Double snappedLatitude;
+
+    @Column(name = "snapped_longitude")
+    private Double snappedLongitude;
+
+    @Column(name = "location_name")
+    private String locationName;
+
+    @Column(name = "nearby_landmark")
+    private String nearbyLandmark;
 
     /** Timestamp from the GPS device itself */
     @Column(name = "gps_time", nullable = false)

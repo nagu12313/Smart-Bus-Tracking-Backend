@@ -2,18 +2,11 @@ package com.smartbus.service.impl;
 
 import com.smartbus.dto.request.LocationUpdateRequest;
 import com.smartbus.dto.response.LocationResponse;
-import com.smartbus.entity.Bus;
-import com.smartbus.entity.BusLatestLocation;
-import com.smartbus.entity.BusLocation;
-import com.smartbus.entity.BusLocationHistory;
-import com.smartbus.entity.Driver;
+import com.smartbus.entity.*;
 import com.smartbus.exception.BadRequestException;
 import com.smartbus.exception.ResourceNotFoundException;
-import com.smartbus.repository.BusLatestLocationRepository;
-import com.smartbus.repository.BusLocationHistoryRepository;
-import com.smartbus.repository.BusLocationRepository;
-import com.smartbus.repository.BusRepository;
-import com.smartbus.repository.TripRepository;
+import com.smartbus.repository.*;
+import com.smartbus.service.*;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -30,9 +23,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 /**
- * High-Performance GPS Tracking Service.
- * Uses an ultra-fast in-memory ConcurrentHashMap cache for sub-millisecond retrieval,
- * backed by persistent storage in Aiven Cloud MySQL.
+ * Enterprise GPS Tracking Service with High-Accuracy Validation,
+ * Road Snapping, Dynamic Bearing Resolution, and Verified Reverse Geocoding.
  */
 @Service
 @RequiredArgsConstructor
@@ -47,7 +39,10 @@ public class TrackingService {
     private final org.springframework.transaction.support.TransactionTemplate transactionTemplate;
     private final org.springframework.beans.factory.ObjectProvider<org.springframework.messaging.simp.SimpMessagingTemplate> messagingTemplateProvider;
 
-    private static final long STALENESS_THRESHOLD_SECONDS = 120; // 2 minutes (120 seconds)
+    private final GpsValidationService gpsValidationService;
+    private final RoadMapMatchingService roadMapMatchingService;
+    private final BusHeadingService busHeadingService;
+    private final ReverseGeocodingService reverseGeocodingService;
 
     // High-speed In-Memory Cache for sub-millisecond live tracking responses
     private final Map<Long, LocationResponse> liveCache = new ConcurrentHashMap<>();
@@ -56,7 +51,6 @@ public class TrackingService {
     public void warmupCache() {
         try {
             transactionTemplate.executeWithoutResult(status -> {
-                // First try hot table bus_latest_locations
                 List<BusLatestLocation> latest = busLatestLocationRepository.findAllWithBusDetails();
                 if (latest != null && !latest.isEmpty()) {
                     for (BusLatestLocation bll : latest) {
@@ -92,7 +86,7 @@ public class TrackingService {
     }
 
     /**
-     * High-speed GPS record insertion: writes to MySQL and updates live cache instantly.
+     * High-accuracy GPS record insertion with road matching and verified geocoding.
      */
     @Transactional
     public LocationResponse recordLocation(LocationUpdateRequest request, String deviceToken) {
@@ -106,46 +100,108 @@ public class TrackingService {
             }
         }
 
-        LocalDateTime gpsTime = request.getGpsTime() != null
-                ? request.getGpsTime()
-                : LocalDateTime.now();
+        LocationResponse prevLocation = liveCache.get(bus.getId());
 
-        BusLocation location = BusLocation.builder()
-                .bus(bus)
-                .latitude(request.getLatitude())
-                .longitude(request.getLongitude())
-                .speed(request.getSpeed() != null ? request.getSpeed() : 0.0)
-                .heading(request.getHeading())
-                .gpsTime(gpsTime)
-                .build();
-
-        // Link to active trip if tripId provided or find one
-        if (request.getTripId() != null) {
-            tripRepository.findById(request.getTripId())
-                    .ifPresent(location::setTrip);
-        } else {
-            tripRepository.findTopByBusIdAndStatusOrderByCreatedAtDesc(bus.getId(), "IN_PROGRESS")
-                    .ifPresent(location::setTrip);
+        // 1. Strict GPS Validation (bounds, clock skew, jump detection, accuracy filter)
+        GpsValidationService.ValidationResult validation = gpsValidationService.validate(request, prevLocation);
+        if (!validation.isValid()) {
+            log.warn("Rejected invalid GPS fix for bus {}: {}", bus.getId(), validation.getRejectionReason());
+            if (prevLocation != null) {
+                return prevLocation;
+            }
+            throw new BadRequestException("Invalid GPS fix: " + validation.getRejectionReason());
         }
 
-        busLocationRepository.save(location);
+        double rawLat = request.getLatitude();
+        double rawLng = request.getLongitude();
+        double speed = validation.getSanitizedSpeed();
+        double accuracy = validation.getSanitizedAccuracy();
 
-        // Update bus status to ON_ROUTE if moving
-        if (request.getSpeed() != null && request.getSpeed() > 2.0) {
+        LocalDateTime gpsTime = request.getGpsTime() != null ? request.getGpsTime() : LocalDateTime.now();
+
+        // 2. Road Map Matching & Snapping
+        RoadMapMatchingService.MapMatchResult matchResult = roadMapMatchingService.matchToRoad(
+                bus, rawLat, rawLng, accuracy
+        );
+
+        Double snappedLat = matchResult.isMatched() ? matchResult.getSnappedLatitude() : null;
+        Double snappedLng = matchResult.isMatched() ? matchResult.getSnappedLongitude() : null;
+        boolean isRoadMatched = matchResult.isMatched();
+        String roadName = matchResult.getRoadName();
+
+        // Display coordinates: use snapped coordinates for visual road alignment if match is reliable, otherwise preserve raw GPS
+        double displayLat = isRoadMatched && snappedLat != null ? snappedLat : rawLat;
+        double displayLng = isRoadMatched && snappedLng != null ? snappedLng : rawLng;
+
+        // 3. Dynamic Heading Resolution (facing direction of movement)
+        Double prevLat = prevLocation != null ? (prevLocation.getRawLatitude() != null ? prevLocation.getRawLatitude() : prevLocation.getLatitude()) : null;
+        Double prevLng = prevLocation != null ? (prevLocation.getRawLongitude() != null ? prevLocation.getRawLongitude() : prevLocation.getLongitude()) : null;
+        Double prevHeading = prevLocation != null ? prevLocation.getHeading() : null;
+
+        Double heading = busHeadingService.resolveHeading(
+                request.getHeading(),
+                speed,
+                displayLat,
+                displayLng,
+                prevLat,
+                prevLng,
+                prevHeading,
+                matchResult.getRoadHeading()
+        );
+
+        // 4. Verified Reverse Geocoding with Strict Proximity Distinction
+        ReverseGeocodingService.GeocodeResult geocode = reverseGeocodingService.reverseGeocode(rawLat, rawLng, accuracy);
+        String locationName = geocode.getLocationName();
+        String nearbyLandmark = geocode.getNearbyLandmark();
+        if (roadName == null || roadName.isBlank()) {
+            roadName = geocode.getRoadName();
+        }
+
+        // 5. Update bus status
+        if (speed > 2.0) {
             bus.setStatus("ON_ROUTE");
-        } else if (request.getSpeed() != null && request.getSpeed() <= 2.0) {
+        } else {
             bus.setStatus("AT_STOP");
         }
         busRepository.save(bus);
 
-        // Synchronize hot table (bus_latest_locations) so restarts reload correct data
+        // 6. Save Persistent BusLocation (Cold Log)
+        BusLocation location = BusLocation.builder()
+                .bus(bus)
+                .latitude(rawLat)
+                .longitude(rawLng)
+                .snappedLatitude(snappedLat)
+                .snappedLongitude(snappedLng)
+                .speed(speed)
+                .heading(heading)
+                .accuracy(accuracy)
+                .locationName(locationName)
+                .nearbyLandmark(nearbyLandmark)
+                .gpsTime(gpsTime)
+                .build();
+
+        if (request.getTripId() != null) {
+            tripRepository.findById(request.getTripId()).ifPresent(location::setTrip);
+        } else {
+            tripRepository.findTopByBusIdAndStatusOrderByCreatedAtDesc(bus.getId(), "IN_PROGRESS").ifPresent(location::setTrip);
+        }
+        busLocationRepository.save(location);
+
+        // 7. Synchronize Hot Table (bus_latest_locations)
         try {
             BusLatestLocation latest = busLatestLocationRepository.findByBusId(bus.getId())
                     .orElse(BusLatestLocation.builder().bus(bus).build());
-            latest.setLatitude(request.getLatitude());
-            latest.setLongitude(request.getLongitude());
-            latest.setSpeed(request.getSpeed() != null ? request.getSpeed() : 0.0);
-            latest.setHeading(request.getHeading() != null ? request.getHeading() : 0.0);
+            latest.setLatitude(rawLat);
+            latest.setLongitude(rawLng);
+            latest.setSnappedLatitude(snappedLat);
+            latest.setSnappedLongitude(snappedLng);
+            latest.setSpeed(speed);
+            latest.setHeading(heading);
+            latest.setAccuracy(accuracy);
+            latest.setIsRoadMatched(isRoadMatched);
+            latest.setRoadName(roadName);
+            latest.setLocationName(locationName);
+            latest.setNearbyLandmark(nearbyLandmark);
             latest.setGpsTimestamp(gpsTime);
             latest.setReceivedAt(LocalDateTime.now());
             latest.setStatus(bus.getStatus());
@@ -157,22 +213,45 @@ public class TrackingService {
             log.warn("Failed to update bus_latest_locations hot table: {}", e.getMessage());
         }
 
-        LocationResponse response = toResponse(bus, location);
-        // Instant in-memory cache update
-        liveCache.put(bus.getId(), response);
+        // 8. Build Complete LocationResponse
+        Driver driver = location.getTrip() != null && location.getTrip().getDriver() != null
+                ? location.getTrip().getDriver()
+                : bus.getDriver();
 
-        try {
-            org.springframework.messaging.simp.SimpMessagingTemplate messaging = messagingTemplateProvider.getIfAvailable();
-            if (messaging != null) {
-                messaging.convertAndSend("/topic/tracking", response);
-                messaging.convertAndSend("/topic/bus/" + bus.getId(), response);
-            }
-        } catch (Exception ex) {
-            log.debug("WebSocket broadcast skipped: {}", ex.getMessage());
-        }
+        LocationResponse response = LocationResponse.builder()
+                .busId(bus.getId())
+                .busNumber(bus.getBusNumber())
+                .busName(bus.getBusName())
+                .status(bus.getStatus())
+                .latitude(displayLat)
+                .longitude(displayLng)
+                .rawLatitude(rawLat)
+                .rawLongitude(rawLng)
+                .snappedLatitude(snappedLat)
+                .snappedLongitude(snappedLng)
+                .isRoadMatched(isRoadMatched)
+                .roadName(roadName)
+                .speed(speed)
+                .heading(heading)
+                .accuracy(accuracy)
+                .accuracyDescription(validation.getAccuracyDescription())
+                .provider(request.getProvider() != null ? request.getProvider() : "gps")
+                .locationName(locationName)
+                .nearbyLandmark(nearbyLandmark)
+                .gpsTime(gpsTime)
+                .receivedAt(LocalDateTime.now())
+                .tripId(location.getTrip() != null ? location.getTrip().getId() : null)
+                .driverId(driver != null ? driver.getId() : null)
+                .driverName(driver != null && driver.getUser() != null ? driver.getUser().getName() : "Assigned Driver")
+                .driverPhone(driver != null ? driver.getPhone() : null)
+                .isStale(false)
+                .build();
 
-        log.debug("GPS location recorded: busId={}, lat={}, lng={}", bus.getId(),
-                request.getLatitude(), request.getLongitude());
+        // 9. Instant in-memory cache update & WebSocket broadcast
+        updateLiveCache(bus.getId(), response);
+
+        log.debug("GPS location recorded: busId={}, display=({}, {}), raw=({}, {}), roadMatched={}, place={}",
+                bus.getId(), displayLat, displayLng, rawLat, rawLng, isRoadMatched, locationName);
         return response;
     }
 
@@ -183,11 +262,9 @@ public class TrackingService {
     public LocationResponse getLatestLocation(Long busId) {
         LocationResponse cached = liveCache.get(busId);
         if (cached != null) {
-            // refresh stale flag dynamically
             return checkStale(cached);
         }
 
-        // Try hot table bus_latest_locations
         return busLatestLocationRepository.findByBusId(busId)
                 .map(this::toResponse)
                 .orElseGet(() -> {
@@ -204,28 +281,28 @@ public class TrackingService {
 
     @Transactional(readOnly = true)
     public List<LocationResponse> getLocationHistory(Long busId, int limit) {
-        Bus bus = busRepository.findById(busId)
-                .orElseThrow(() -> new ResourceNotFoundException("Bus", busId));
+        int safeLimit = Math.min(Math.max(limit, 1), 500);
 
-        // First check bus_location_history
-        List<BusLocationHistory> history = busLocationHistoryRepository
-                .findLatestHistoryByBusId(busId, PageRequest.of(0, limit));
-        if (history != null && !history.isEmpty()) {
-            return history.stream()
+        List<BusLocationHistory> coldHistory = busLocationHistoryRepository
+                .findLatestHistoryByBusId(busId, PageRequest.of(0, safeLimit));
+
+        if (coldHistory != null && !coldHistory.isEmpty()) {
+            Bus bus = busRepository.findById(busId)
+                    .orElseThrow(() -> new ResourceNotFoundException("Bus", busId));
+            return coldHistory.stream()
                     .map(h -> toResponse(bus, h))
                     .collect(Collectors.toList());
         }
 
-        // Fallback to legacy bus_locations table
-        return busLocationRepository.findHistoryByBusId(busId, PageRequest.of(0, limit))
+        Bus bus = busRepository.findById(busId)
+                .orElseThrow(() -> new ResourceNotFoundException("Bus", busId));
+        return busLocationRepository
+                .findHistoryByBusId(busId, PageRequest.of(0, safeLimit))
                 .stream()
                 .map(loc -> toResponse(bus, loc))
                 .collect(Collectors.toList());
     }
 
-    /**
-     * High-speed retrieval for map polling: served directly from RAM!
-     */
     @Transactional(readOnly = true)
     public List<LocationResponse> getAllLatestLocations() {
         if (!liveCache.isEmpty()) {
@@ -234,9 +311,9 @@ public class TrackingService {
                     .collect(Collectors.toList());
         }
 
-        List<BusLatestLocation> latest = busLatestLocationRepository.findAllWithBusDetails();
-        if (latest != null && !latest.isEmpty()) {
-            List<LocationResponse> fresh = latest.stream()
+        List<BusLatestLocation> hotRows = busLatestLocationRepository.findAllWithBusDetails();
+        if (hotRows != null && !hotRows.isEmpty()) {
+            List<LocationResponse> fresh = hotRows.stream()
                     .map(this::toResponse)
                     .collect(Collectors.toList());
             fresh.forEach(l -> liveCache.put(l.getBusId(), l));
@@ -251,9 +328,6 @@ public class TrackingService {
         return fresh;
     }
 
-    /**
-     * Retrieve all active bus locations (filtered by non-OFFLINE status).
-     */
     @Transactional(readOnly = true)
     public List<LocationResponse> getActiveBusesLocations() {
         return getAllLatestLocations().stream()
@@ -278,15 +352,30 @@ public class TrackingService {
         String driverName = driver != null && driver.getUser() != null ? driver.getUser().getName() : "Assigned Driver";
         String driverPhone = driver != null ? driver.getPhone() : null;
 
+        boolean isRoadMatched = Boolean.TRUE.equals(bll.getIsRoadMatched());
+        double displayLat = isRoadMatched && bll.getSnappedLatitude() != null ? bll.getSnappedLatitude() : bll.getLatitude();
+        double displayLng = isRoadMatched && bll.getSnappedLongitude() != null ? bll.getSnappedLongitude() : bll.getLongitude();
+
         return LocationResponse.builder()
                 .busId(bus != null ? bus.getId() : null)
                 .busNumber(bus != null ? bus.getBusNumber() : "N/A")
                 .busName(bus != null ? bus.getBusName() : "Campus Bus")
                 .status(liveStatus)
-                .latitude(bll.getLatitude())
-                .longitude(bll.getLongitude())
+                .latitude(displayLat)
+                .longitude(displayLng)
+                .rawLatitude(bll.getLatitude())
+                .rawLongitude(bll.getLongitude())
+                .snappedLatitude(bll.getSnappedLatitude())
+                .snappedLongitude(bll.getSnappedLongitude())
+                .isRoadMatched(isRoadMatched)
+                .roadName(bll.getRoadName())
+                .locationName(bll.getLocationName())
+                .nearbyLandmark(bll.getNearbyLandmark())
                 .speed(liveSpeed)
                 .heading(bll.getHeading())
+                .accuracy(bll.getAccuracy())
+                .accuracyDescription(getAccuracyDesc(bll.getAccuracy()))
+                .provider("gps")
                 .gpsTime(bll.getGpsTimestamp())
                 .receivedAt(bll.getReceivedAt())
                 .tripId(bll.getTrip() != null ? bll.getTrip().getId() : null)
@@ -320,8 +409,13 @@ public class TrackingService {
                 .status(liveStatus)
                 .latitude(blh.getLatitude())
                 .longitude(blh.getLongitude())
+                .rawLatitude(blh.getLatitude())
+                .rawLongitude(blh.getLongitude())
+                .isRoadMatched(false)
                 .speed(liveSpeed)
                 .heading(blh.getHeading())
+                .accuracy(blh.getAccuracy())
+                .accuracyDescription(getAccuracyDesc(blh.getAccuracy()))
                 .gpsTime(blh.getGpsTimestamp())
                 .receivedAt(blh.getReceivedAt())
                 .tripId(blh.getTrip() != null ? blh.getTrip().getId() : null)
@@ -362,15 +456,32 @@ public class TrackingService {
         Double liveSpeed = isStale ? 0.0 : (loc.getSpeed() != null ? loc.getSpeed() : 0.0);
         String liveStatus = isStale ? "PARKED" : (bus.getStatus() != null ? bus.getStatus() : "ONLINE");
 
+        double rawLat = loc.getLatitude();
+        double rawLng = loc.getLongitude();
+        Double snappedLat = loc.getSnappedLatitude();
+        Double snappedLng = loc.getSnappedLongitude();
+        boolean isRoadMatched = snappedLat != null && snappedLng != null;
+        double displayLat = isRoadMatched ? snappedLat : rawLat;
+        double displayLng = isRoadMatched ? snappedLng : rawLng;
+
         return LocationResponse.builder()
                 .busId(bus.getId())
                 .busNumber(bus.getBusNumber())
                 .busName(bus.getBusName())
                 .status(liveStatus)
-                .latitude(loc.getLatitude())
-                .longitude(loc.getLongitude())
+                .latitude(displayLat)
+                .longitude(displayLng)
+                .rawLatitude(rawLat)
+                .rawLongitude(rawLng)
+                .snappedLatitude(snappedLat)
+                .snappedLongitude(snappedLng)
+                .isRoadMatched(isRoadMatched)
+                .locationName(loc.getLocationName())
+                .nearbyLandmark(loc.getNearbyLandmark())
                 .speed(liveSpeed)
                 .heading(loc.getHeading())
+                .accuracy(loc.getAccuracy())
+                .accuracyDescription(getAccuracyDesc(loc.getAccuracy()))
                 .gpsTime(loc.getGpsTime())
                 .receivedAt(loc.getCreatedAt())
                 .tripId(loc.getTrip() != null ? loc.getTrip().getId() : null)
@@ -379,5 +490,13 @@ public class TrackingService {
                 .driverPhone(driverPhone)
                 .isStale(isStale)
                 .build();
+    }
+
+    private String getAccuracyDesc(Double acc) {
+        if (acc == null) return "Standard (±10m)";
+        if (acc <= 10.0) return String.format("High (±%.0fm)", acc);
+        if (acc <= 30.0) return String.format("Good (±%.0fm)", acc);
+        if (acc <= 60.0) return String.format("Moderate (±%.0fm)", acc);
+        return String.format("Approximate (±%.0fm)", acc);
     }
 }

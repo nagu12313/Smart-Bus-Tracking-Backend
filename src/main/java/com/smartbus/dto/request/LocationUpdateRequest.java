@@ -1,30 +1,21 @@
 package com.smartbus.dto.request;
 
 import jakarta.validation.constraints.*;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
 import lombok.Data;
+import lombok.NoArgsConstructor;
 
 import java.time.LocalDateTime;
 
 /**
  * GPS Location Update Request.
- * Sent by physical GPS hardware installed inside the bus.
- *
- * GPS Device Authentication Protocol:
- * - Include header: X-Device-Token: <token>
- * - Include header: X-Bus-Id: <busId>
- * - POST to: /api/tracking/location
- *
- * Example payload:
- * {
- *   "busId": 1,
- *   "latitude": 16.3067,
- *   "longitude": 80.4365,
- *   "speed": 42.5,
- *   "heading": 180.0,
- *   "gpsTime": "2024-01-15T08:30:00"
- * }
+ * Sent by physical GPS hardware or mobile driver app.
  */
 @Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
 public class LocationUpdateRequest {
 
     @NotNull(message = "Bus ID is required")
@@ -50,6 +41,9 @@ public class LocationUpdateRequest {
 
     @DecimalMin(value = "0.0", message = "Accuracy cannot be negative")
     private Double accuracy = 5.0;
+
+    private String provider = "gps";
+    private Double altitude = 0.0;
 
     public void setGpsAccuracy(Double gpsAccuracy) {
         this.accuracy = gpsAccuracy;

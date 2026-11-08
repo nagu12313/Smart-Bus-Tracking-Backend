@@ -53,6 +53,25 @@ public class BusLatestLocation {
     @Builder.Default
     private Double altitude = 0.0;
 
+    @Column(name = "snapped_latitude")
+    private Double snappedLatitude;
+
+    @Column(name = "snapped_longitude")
+    private Double snappedLongitude;
+
+    @Column(name = "road_name")
+    private String roadName;
+
+    @Column(name = "location_name")
+    private String locationName;
+
+    @Column(name = "nearby_landmark")
+    private String nearbyLandmark;
+
+    @Column(name = "is_road_matched")
+    @Builder.Default
+    private Boolean isRoadMatched = false;
+
     @Column(name = "ignition_on")
     @Builder.Default
     private Boolean ignitionOn = true;
