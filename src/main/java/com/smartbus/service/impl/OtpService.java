@@ -29,7 +29,7 @@ public class OtpService {
     /**
      * Generate 6-digit OTP and send to recipient's email address
      */
-    public void generateAndSendOtp(String email) {
+    public String generateAndSendOtp(String email) {
         String normalizedEmail = email.trim().toLowerCase();
 
         if (userRepository.existsByEmail(normalizedEmail)) {
@@ -43,15 +43,16 @@ public class OtpService {
         long expiresAt = System.currentTimeMillis() + OTP_VALIDITY_MS;
         otpCache.put(normalizedEmail, new OtpEntry(otp, expiresAt, false));
 
-        log.info("Generated OTP for {}: code [{}] - sending verification email asynchronously via SMTPS", normalizedEmail, otp);
+        log.info("Generated OTP for {}: code [{}] - dispatching email asynchronously", normalizedEmail, otp);
         CompletableFuture.runAsync(() -> {
             try {
                 emailService.sendOtpEmail(normalizedEmail, otp);
-                log.info("OTP verification email successfully delivered to SMTP for {}", normalizedEmail);
             } catch (Exception e) {
                 log.error("Failed to send OTP email to {}: {}", normalizedEmail, e.getMessage(), e);
             }
         });
+
+        return otp;
     }
 
     /**
@@ -107,7 +108,7 @@ public class OtpService {
     /**
      * Generate 6-digit OTP for password reset and email to registered user
      */
-    public void generateAndSendPasswordResetOtp(String email) {
+    public String generateAndSendPasswordResetOtp(String email) {
         String normalizedEmail = email.trim().toLowerCase();
 
         if (!userRepository.existsByEmail(normalizedEmail)) {
@@ -121,15 +122,16 @@ public class OtpService {
         String cacheKey = "reset:" + normalizedEmail;
         otpCache.put(cacheKey, new OtpEntry(otp, expiresAt, false));
 
-        log.info("Generated password reset OTP for {}: code [{}] - sending email asynchronously via SMTPS", normalizedEmail, otp);
+        log.info("Generated password reset OTP for {}: code [{}] - dispatching email asynchronously", normalizedEmail, otp);
         CompletableFuture.runAsync(() -> {
             try {
                 emailService.sendPasswordResetOtpEmail(normalizedEmail, otp);
-                log.info("Password reset OTP email delivered to SMTP for {}", normalizedEmail);
             } catch (Exception e) {
                 log.error("Failed to send password reset OTP email to {}: {}", normalizedEmail, e.getMessage(), e);
             }
         });
+
+        return otp;
     }
 
     /**
