@@ -16,4 +16,14 @@ public class RoutePreviewResponse {
     private String geometryGeojson;
     private List<RouteStopPointDto> stops;
     private String message;
+
+    // Advanced Road Optimization Metrics
+    private Double originalDistanceKm;
+    private Integer originalDurationMinutes;
+    private Double optimizedDistanceKm;
+    private Integer optimizedDurationMinutes;
+    private Double distanceSavedKm;
+    private Double percentageSaved;
+    private Integer durationSavedMinutes;
+    private Boolean isOptimized;
 }

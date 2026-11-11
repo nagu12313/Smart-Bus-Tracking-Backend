@@ -3,10 +3,12 @@ package com.smartbus.service.impl;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.smartbus.dto.response.LocationResponse;
+import com.smartbus.dto.response.TransportChatInitResponse;
 import com.smartbus.dto.response.TransportChatMessageResponse;
 import com.smartbus.entity.*;
 import com.smartbus.repository.BusRepository;
 import com.smartbus.repository.RouteStopRepository;
+import com.smartbus.repository.StudentRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -32,6 +34,7 @@ public class TransportChatService {
     private final TrackingService trackingService;
     private final RouteStopRepository routeStopRepository;
     private final BusRepository busRepository;
+    private final StudentRepository studentRepository;
     private final ObjectMapper objectMapper;
 
     @Value("${gemini.api.key:}")
@@ -49,6 +52,84 @@ public class TransportChatService {
     private final HttpClient httpClient = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(10))
             .build();
+
+    public TransportChatInitResponse getInitContext(User user) {
+        TransportChatSecurityService.UserTransportContext ctx = securityService.getAuthorizedContext(user);
+        Role role = ctx.getRole() != null ? ctx.getRole() : Role.PARENT;
+        List<Bus> authorizedBuses = ctx.getAuthorizedBuses();
+        Long userId = user != null ? user.getId() : 0L;
+
+        // Auto-identify bus if single or driver/parent/student assigned
+        Bus identifiedBus = userActiveBus.get(userId);
+        if (identifiedBus == null && !authorizedBuses.isEmpty()) {
+            identifiedBus = authorizedBuses.get(0);
+            userActiveBus.put(userId, identifiedBus);
+        }
+
+        String welcome;
+        List<String> questions = new ArrayList<>();
+        String contextSummary;
+
+        if (role == Role.ADMIN || role == Role.SCHOOL_ADMIN) {
+            List<Bus> allBuses = busRepository.findAll();
+            long activeCount = allBuses.stream().filter(b -> "ACTIVE".equalsIgnoreCase(b.getStatus())).count();
+            long routeCount = allBuses.stream().map(Bus::getRoute).filter(Objects::nonNull).distinct().count();
+            welcome = String.format("Welcome, Administrator %s! I am your Smart Transport AI Assistant. You have full administrative oversight of %d fleet vehicles (%d active) across %d routes. How can I assist you with fleet operations today?",
+                    user != null && user.getName() != null ? user.getName() : "Admin", allBuses.size(), activeCount, routeCount);
+            questions.add("Fleet status overview");
+            questions.add("How many buses are active?");
+            questions.add("Show moving vehicles");
+            questions.add("List all routes");
+            if (!allBuses.isEmpty()) {
+                questions.add("Check Bus " + allBuses.get(0).getBusNumber());
+            }
+            contextSummary = String.format("Admin Overview • %d Vehicles • %d Active Routes", allBuses.size(), routeCount);
+        } else if (role == Role.DRIVER) {
+            String busNumber = identifiedBus != null ? identifiedBus.getBusNumber() : "Assigned Bus";
+            String busName = identifiedBus != null ? identifiedBus.getBusName() : "Vehicle";
+            String routeName = identifiedBus != null && identifiedBus.getRoute() != null ? identifiedBus.getRoute().getName() : "Main Campus";
+            welcome = String.format("Hello, Driver %s! You are assigned to Bus %s (%s) on route '%s'. How can I help you with your schedule or stops today?",
+                    user != null && user.getName() != null ? user.getName() : "Driver", busNumber, busName, routeName);
+            questions.add("My assigned route & stops");
+            questions.add("Students on my bus");
+            questions.add("Next stop arrival time");
+            questions.add("My vehicle status");
+            contextSummary = String.format("Driver Portal • Bus %s • %s", busNumber, routeName);
+        } else if (role == Role.STUDENT) {
+            Student s = ctx.getAuthorizedStudents().isEmpty() ? null : ctx.getAuthorizedStudents().get(0);
+            String busNumber = identifiedBus != null ? identifiedBus.getBusNumber() : "Campus Bus";
+            String pickupStop = s != null && s.getPickupStop() != null ? s.getPickupStop().getName() : "your designated stop";
+            welcome = String.format("Hello, %s! You are assigned to Bus %s with pickup at %s. Need your live bus location or arrival time?",
+                    user != null && user.getName() != null ? user.getName() : "Student", busNumber, pickupStop);
+            questions.add("Where is my bus right now?");
+            questions.add("When will it reach " + (s != null && s.getPickupStop() != null ? s.getPickupStop().getName() : "my stop") + "?");
+            questions.add("Who is my driver?");
+            questions.add("Route stops list");
+            contextSummary = String.format("Student Transit • Bus %s • Stop: %s", busNumber, pickupStop);
+        } else { // PARENT
+            Student s = ctx.getAuthorizedStudents().isEmpty() ? null : ctx.getAuthorizedStudents().get(0);
+            String childName = s != null && s.getUser() != null ? s.getUser().getName() : "your child";
+            String busNumber = identifiedBus != null ? identifiedBus.getBusNumber() : "Campus Bus";
+            String pickupStop = s != null && s.getPickupStop() != null ? s.getPickupStop().getName() : "pickup point";
+            welcome = String.format("Welcome, %s! Monitoring transportation for %s on Bus %s. How can I assist you today?",
+                    user != null && user.getName() != null ? user.getName() : "Parent", childName, busNumber);
+            questions.add("Where is my child's bus right now?");
+            questions.add("When will it reach " + pickupStop + "?");
+            questions.add("Driver name & phone number");
+            questions.add("Is my bus moving or delayed?");
+            contextSummary = String.format("Parent Guardian • %s • Bus %s", childName, busNumber);
+        }
+
+        return TransportChatInitResponse.builder()
+                .welcomeMessage(welcome)
+                .suggestedQuestions(questions)
+                .userRole(role.name())
+                .userName(user != null ? user.getName() : "User")
+                .identifiedBusNumber(identifiedBus != null ? identifiedBus.getBusNumber() : null)
+                .identifiedBusName(identifiedBus != null ? identifiedBus.getBusName() : null)
+                .contextSummary(contextSummary)
+                .build();
+    }
 
     public TransportChatMessageResponse processMessage(User user, String userMessage) {
         String cleanMessage = userMessage != null ? userMessage.trim() : "";
@@ -72,6 +153,17 @@ public class TransportChatService {
         // 2. Strict Topic Enforcement (Unsupported assistance like complaints/refunds)
         if (intent == TransportIntentClassifier.Intent.UNSUPPORTED_ASSISTANCE) {
             botReply = "Please contact your transport administrator for further assistance.";
+        } else if (intent == TransportIntentClassifier.Intent.FLEET_OVERVIEW) {
+            TransportChatSecurityService.UserTransportContext ctx = securityService.getAuthorizedContext(user);
+            botReply = generateFleetOverview(ctx);
+        } else if (intent == TransportIntentClassifier.Intent.STUDENT_LIST) {
+            TransportChatSecurityService.UserTransportContext ctx = securityService.getAuthorizedContext(user);
+            Bus currentBus = userActiveBus.get(userId);
+            if (currentBus == null && !ctx.getAuthorizedBuses().isEmpty()) {
+                currentBus = ctx.getAuthorizedBuses().get(0);
+                userActiveBus.put(userId, currentBus);
+            }
+            botReply = generateStudentList(ctx, currentBus);
         } else {
             // 3. Bus Identification and Authorization Check (Mandatory Behavior)
             TransportChatSecurityService.UserTransportContext ctx = securityService.getAuthorizedContext(user);
@@ -104,14 +196,21 @@ public class TransportChatService {
             } else {
                 // Check if bus is already identified for this session or single assigned (Rule 1 & 8)
                 Bus currentBus = userActiveBus.get(userId);
-                if (currentBus == null && authorizedBuses.size() == 1) {
-                    // Rule 8: If only one bus is assigned to the logged-in user, identify it automatically and avoid asking unnecessarily.
+                // For Driver, Student, or Parent, always auto-select their single/first assigned bus
+                if (currentBus == null && (!ctx.isAdmin() || authorizedBuses.size() == 1)) {
                     currentBus = authorizedBuses.get(0);
                     userActiveBus.put(userId, currentBus);
                 }
 
-                if (currentBus == null) {
-                    // Multiple buses assigned or unclear, and no bus has been identified yet (Rule 2 & 3)
+                if (currentBus == null && ctx.isAdmin()) {
+                    // For Admin with multiple buses asking general questions without specifying a bus
+                    if (intent == TransportIntentClassifier.Intent.GREETING) {
+                        botReply = String.format("Welcome, Administrator %s! You are overseeing %d fleet vehicles. Ask me for a 'Fleet overview' or specify a bus number for live tracking.",
+                                ctx.getUserName() != null ? ctx.getUserName() : "Admin", authorizedBuses.size());
+                    } else {
+                        botReply = generateFleetOverview(ctx);
+                    }
+                } else if (currentBus == null) {
                     if (intent == TransportIntentClassifier.Intent.GREETING) {
                         botReply = "Welcome to Smart Transport Assistant! Which bus would you like assistance with? Please enter your bus name or bus number.";
                     } else {
@@ -478,5 +577,102 @@ public class TransportChatService {
                 return String.format("What would you like to know about Bus %s (%s)? Ask me about its live location, ETA, driver, route, or schedule.",
                         targetBus.getBusNumber(), targetBus.getBusName());
         }
+    }
+
+    private String generateFleetOverview(TransportChatSecurityService.UserTransportContext ctx) {
+        List<Bus> allBuses = busRepository.findAll();
+        if (allBuses.isEmpty()) {
+            return "No buses are currently registered in the campus transport system.";
+        }
+
+        int totalBuses = allBuses.size();
+        int movingCount = 0;
+        int stoppedCount = 0;
+        int parkedCount = 0;
+        StringBuilder sb = new StringBuilder();
+        sb.append(String.format("🚌 Campus Fleet Overview (%d Registered Vehicles):\n\n", totalBuses));
+
+        for (Bus b : allBuses) {
+            LocationResponse loc = null;
+            try {
+                loc = trackingService.getLatestLocation(b.getId());
+            } catch (Exception ignored) {}
+
+            boolean hasGps = loc != null && loc.getLatitude() != null && loc.getLongitude() != null;
+            double speed = (hasGps && loc.getSpeed() != null) ? loc.getSpeed() : 0.0;
+            String status;
+            if (hasGps && speed > 2.0) {
+                status = String.format("Moving (%.1f km/h)", speed);
+                movingCount++;
+            } else if (hasGps && "ACTIVE".equalsIgnoreCase(b.getStatus())) {
+                status = "Stopped at stop / Idle";
+                stoppedCount++;
+            } else {
+                status = "Parked / Inactive";
+                parkedCount++;
+            }
+
+            String driverName = b.getDriver() != null && b.getDriver().getUser() != null ? b.getDriver().getUser().getName() : "Unassigned";
+            String routeName = b.getRoute() != null ? b.getRoute().getName() : "No Route";
+            sb.append(String.format("• Bus %s (%s) — %s | Route: %s | Driver: %s\n",
+                    b.getBusNumber(), b.getBusName() != null ? b.getBusName() : "Bus",
+                    status, routeName, driverName));
+        }
+
+        sb.append(String.format("\n📊 Live Telemetry Summary: %d Moving in transit • %d Stopped/Active • %d Parked\n\n",
+                movingCount, stoppedCount, parkedCount));
+        if (!allBuses.isEmpty()) {
+            sb.append("Tip: Specify any bus number (e.g., 'Status of Bus ").append(allBuses.get(0).getBusNumber()).append("') for live coordinates, ETA, and Google Maps tracking.");
+        }
+        return sb.toString();
+    }
+
+    private String generateStudentList(TransportChatSecurityService.UserTransportContext ctx, Bus targetBus) {
+        Role role = ctx.getRole();
+        if (role == Role.PARENT || role == Role.STUDENT) {
+            List<Student> students = ctx.getAuthorizedStudents();
+            if (students.isEmpty()) {
+                return "No student transport profile is currently linked to your account. Please contact your transport administrator.";
+            }
+            StringBuilder sb = new StringBuilder();
+            sb.append("🎓 Student Transportation Profile:\n\n");
+            for (Student s : students) {
+                String sName = s.getUser() != null ? s.getUser().getName() : "Student";
+                String busNum = s.getBus() != null ? s.getBus().getBusNumber() : "None";
+                String pickup = s.getPickupStop() != null ? s.getPickupStop().getName() : "Unassigned";
+                String drop = s.getDropStop() != null ? s.getDropStop().getName() : "Unassigned";
+                sb.append(String.format("• %s (Roll: %s, Class: %s)\n  - Assigned Bus: %s\n  - Pickup Stop: %s\n  - Drop Stop: %s\n",
+                        sName, s.getRollNumber(), s.getClassName() != null ? s.getClassName() : "N/A",
+                        busNum, pickup, drop));
+            }
+            return sb.toString();
+        }
+
+        // For Driver or Admin
+        if (targetBus == null && !ctx.getAuthorizedBuses().isEmpty()) {
+            targetBus = ctx.getAuthorizedBuses().get(0);
+        }
+
+        if (targetBus != null) {
+            List<Student> busStudents = studentRepository.findByBusId(targetBus.getId());
+            StringBuilder sb = new StringBuilder();
+            sb.append(String.format("👥 Student Passengers on Bus %s (%d Enrolled):\n\n",
+                    targetBus.getBusNumber(), busStudents.size()));
+            if (busStudents.isEmpty()) {
+                sb.append("No students are currently assigned to this vehicle.");
+            } else {
+                for (Student s : busStudents) {
+                    String sName = s.getUser() != null ? s.getUser().getName() : "Student";
+                    String stop = s.getPickupStop() != null ? s.getPickupStop().getName() : "Standard Pickup";
+                    sb.append(String.format("• %s (Class: %s) — Pickup Stop: %s\n",
+                            sName, s.getClassName() != null ? s.getClassName() : "General", stop));
+                }
+            }
+            return sb.toString();
+        }
+
+        long totalStudents = studentRepository.count();
+        return String.format("A total of %d students are registered in the campus transport system. Ask about a specific bus to see its passenger roster.",
+                totalStudents);
     }
 }

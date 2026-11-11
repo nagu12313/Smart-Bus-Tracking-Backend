@@ -15,4 +15,8 @@ public class RouteStopPointDto {
     private Double longitude;
     private Integer stopOrder;
     private String arrivalTime;
+    private String departureTime;
+    private String stopType;
+    private Integer durationDelta;
+    private Double distanceFromPrevKm;
 }

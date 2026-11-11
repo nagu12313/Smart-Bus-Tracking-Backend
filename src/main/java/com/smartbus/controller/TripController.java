@@ -15,6 +15,8 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -27,6 +29,32 @@ import java.util.List;
 public class TripController {
 
     private final TripService tripService;
+
+    @GetMapping("/my-trips")
+    @Operation(summary = "Get trips assigned to the currently logged in driver")
+    public ResponseEntity<ApiResponse<List<TripResponse>>> getMyTrips(
+            @AuthenticationPrincipal UserDetails userDetails) {
+        String username = userDetails != null ? userDetails.getUsername() : "driver@edutrack.com";
+        return ResponseEntity.ok(ApiResponse.success(tripService.getMyTrips(username)));
+    }
+
+    @GetMapping("/{id}")
+    @Operation(summary = "Get trip by ID with route and bus details")
+    public ResponseEntity<ApiResponse<TripResponse>> getTripById(@PathVariable Long id) {
+        return ResponseEntity.ok(ApiResponse.success(tripService.getTripById(id)));
+    }
+
+    @GetMapping("/driver/{driverId}")
+    @Operation(summary = "Get all trips for a specific driver")
+    public ResponseEntity<ApiResponse<List<TripResponse>>> getTripsByDriver(@PathVariable Long driverId) {
+        return ResponseEntity.ok(ApiResponse.success(tripService.getTripsByDriver(driverId)));
+    }
+
+    @PutMapping("/{id}/start")
+    @Operation(summary = "Start an assigned scheduled trip directly")
+    public ResponseEntity<ApiResponse<TripResponse>> startScheduledTrip(@PathVariable Long id) {
+        return ResponseEntity.ok(ApiResponse.success("Trip started successfully", tripService.startScheduledTrip(id)));
+    }
 
     @PostMapping("/start")
     @Operation(summary = "Start a new trip")

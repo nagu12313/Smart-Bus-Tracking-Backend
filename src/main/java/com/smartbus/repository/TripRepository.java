@@ -22,4 +22,7 @@ public interface TripRepository extends JpaRepository<Trip, Long> {
     Optional<Trip> findTopByBusIdAndStatusOrderByCreatedAtDesc(Long busId, String status);
     Page<Trip> findByBusId(Long busId, Pageable pageable);
     Page<Trip> findByDriverId(Long driverId, Pageable pageable);
+    List<Trip> findByDriverIdOrderByCreatedAtDesc(Long driverId);
+    List<Trip> findByDriverIdAndStatus(Long driverId, String status);
+    Optional<Trip> findTopByDriverIdAndStatusOrderByCreatedAtDesc(Long driverId, String status);
 }

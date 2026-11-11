@@ -22,6 +22,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
+import com.smartbus.service.RouteOptimizationEngine;
+
 @Service
 @RequiredArgsConstructor
 @Slf4j
@@ -30,6 +32,7 @@ public class RouteService {
     private final RouteRepository routeRepository;
     private final RouteStopRepository routeStopRepository;
     private final StopRepository stopRepository;
+    private final RouteOptimizationEngine routeOptimizationEngine;
 
     private volatile List<RouteResponse> cachedRoutes = null;
     private volatile long lastCacheTime = 0;
@@ -128,6 +131,7 @@ public class RouteService {
 
         if (request.getStops() != null) {
             routeStopRepository.deleteByRouteId(id);
+            routeStopRepository.flush();
             saveRouteStops(route, request.getStops());
         }
 
@@ -163,12 +167,20 @@ public class RouteService {
             if (sName.length() > 150) sName = sName.substring(0, 150);
             if (sAddr.length() > 255) sAddr = sAddr.substring(0, 255);
 
-            if (stop == null || linkedStopIds.contains(stop.getId())) {
+            if (stop != null && !linkedStopIds.contains(stop.getId())) {
+                stop.setName(sName);
+                stop.setAddress(sAddr);
+                if (sLat != null && sLng != null) {
+                    stop.setLatitude(sLat);
+                    stop.setLongitude(sLng);
+                }
+                stop = stopRepository.save(stop);
+            } else {
                 stop = Stop.builder()
                         .name(sName)
                         .address(sAddr)
-                        .latitude(sLat)
-                        .longitude(sLng)
+                        .latitude(sLat != null ? sLat : 0.0)
+                        .longitude(sLng != null ? sLng : 0.0)
                         .build();
                 stop = stopRepository.save(stop);
             }
@@ -237,101 +249,11 @@ public class RouteService {
 
     public RoutePreviewResponse previewRoute(RoutePreviewRequest request) {
         List<RouteStopPointDto> stops = request.getStops();
-        if (stops == null || stops.size() < 2) {
-            return RoutePreviewResponse.builder()
-                    .distanceKm(0.0)
-                    .durationMinutes(0)
-                    .stops(stops)
-                    .message("At least 2 points are required to calculate road route.")
-                    .build();
-        }
-
-        double totalDist = calculateTotalDistanceKm(stops);
-        int duration = Math.max(5, (int) Math.round((totalDist / 30.0) * 60.0));
-
-        return RoutePreviewResponse.builder()
-                .distanceKm(Math.round(totalDist * 100.0) / 100.0)
-                .durationMinutes(duration)
-                .stops(stops)
-                .message("Road route preview calculated successfully")
-                .build();
+        return routeOptimizationEngine.calculatePreview(stops, false);
     }
 
     public RoutePreviewResponse optimizeRoute(RoutePreviewRequest request) {
         List<RouteStopPointDto> stops = request.getStops();
-        if (stops == null || stops.size() < 4) {
-            return previewRoute(request);
-        }
-
-        RouteStopPointDto start = stops.get(0);
-        RouteStopPointDto end = stops.get(stops.size() - 1);
-        List<RouteStopPointDto> intermediate = new ArrayList<>(stops.subList(1, stops.size() - 1));
-
-        // Nearest neighbor optimization on intermediate stops
-        List<RouteStopPointDto> optimized = new ArrayList<>();
-        double currentLat = start.getLatitude();
-        double currentLon = start.getLongitude();
-
-        while (!intermediate.isEmpty()) {
-            int nearestIdx = 0;
-            double minDist = Double.MAX_VALUE;
-
-            for (int i = 0; i < intermediate.size(); i++) {
-                RouteStopPointDto candidate = intermediate.get(i);
-                double d = haversineKm(currentLat, currentLon, candidate.getLatitude(), candidate.getLongitude());
-                if (d < minDist) {
-                    minDist = d;
-                    nearestIdx = i;
-                }
-            }
-
-            RouteStopPointDto next = intermediate.remove(nearestIdx);
-            optimized.add(next);
-            currentLat = next.getLatitude();
-            currentLon = next.getLongitude();
-        }
-
-        List<RouteStopPointDto> fullOptimized = new ArrayList<>();
-        fullOptimized.add(start);
-        fullOptimized.addAll(optimized);
-        fullOptimized.add(end);
-
-        for (int i = 0; i < fullOptimized.size(); i++) {
-            fullOptimized.get(i).setStopOrder(i + 1);
-        }
-
-        double optimizedDist = calculateTotalDistanceKm(fullOptimized);
-        int duration = Math.max(5, (int) Math.round((optimizedDist / 30.0) * 60.0));
-
-        return RoutePreviewResponse.builder()
-                .distanceKm(Math.round(optimizedDist * 100.0) / 100.0)
-                .durationMinutes(duration)
-                .stops(fullOptimized)
-                .message("Intermediate stops rearranged to minimize road travel distance")
-                .build();
-    }
-
-    private double calculateTotalDistanceKm(List<RouteStopPointDto> points) {
-        double dist = 0.0;
-        for (int i = 0; i < points.size() - 1; i++) {
-            RouteStopPointDto p1 = points.get(i);
-            RouteStopPointDto p2 = points.get(i + 1);
-            if (p1.getLatitude() != null && p1.getLongitude() != null &&
-                p2.getLatitude() != null && p2.getLongitude() != null) {
-                dist += haversineKm(p1.getLatitude(), p1.getLongitude(), p2.getLatitude(), p2.getLongitude()) * 1.25;
-            }
-        }
-        return dist;
-    }
-
-    private double haversineKm(double lat1, double lon1, double lat2, double lon2) {
-        double r = 6371.0;
-        double dLat = Math.toRadians(lat2 - lat1);
-        double dLon = Math.toRadians(lon2 - lon1);
-        double a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-                Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) *
-                Math.sin(dLon / 2) * Math.sin(dLon / 2);
-        double c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-        return r * c;
+        return routeOptimizationEngine.optimize(stops);
     }
 }

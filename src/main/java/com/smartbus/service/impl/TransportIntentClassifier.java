@@ -10,6 +10,8 @@ public class TransportIntentClassifier {
 
     public enum Intent {
         GREETING,
+        FLEET_OVERVIEW,
+        STUDENT_LIST,
         BUS_LOCATION,
         BUS_SCHEDULE,
         DRIVER_INFO,
@@ -70,13 +72,26 @@ public class TransportIntentClassifier {
                 "stop", "stops", "pickup", "pickups", "drop", "drops", "trip", "trips",
                 "gps", "eta", "tracking", "track", "delay", "delays", "delayed", "speed",
                 "location", "arrive", "arrival", "timing", "timings", "schedule", "schedules",
-                "timetable", "alert", "alerts", "late", "moving", "vehicle", "transit");
+                "timetable", "alert", "alerts", "late", "moving", "vehicle", "transit",
+                "fleet", "overview", "student", "students", "child", "children", "passenger");
 
         if (!isTransportRelated) {
             return Intent.UNRELATED;
         }
 
         // 5. Categorize specific transportation intents
+        if (hasWord(q, "fleet", "overview") ||
+            q.contains("all buses") || q.contains("active buses") || q.contains("how many buses") ||
+            q.contains("moving vehicles") || q.contains("fleet status") || q.contains("system status") ||
+            q.contains("active fleet")) {
+            return Intent.FLEET_OVERVIEW;
+        }
+
+        if (hasWord(q, "student", "students", "passenger", "passengers", "children", "child") ||
+            q.contains("pickup list") || q.contains("my child") || q.contains("my student") ||
+            q.contains("student list") || q.contains("assigned students")) {
+            return Intent.STUDENT_LIST;
+        }
         if (hasWord(q, "where", "location", "moving", "speed", "track", "tracking", "position") ||
             q.contains("live map")) {
             return Intent.BUS_LOCATION;

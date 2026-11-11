@@ -29,6 +29,7 @@ public class TripService {
     private final BusRepository busRepository;
     private final DriverRepository driverRepository;
     private final RouteRepository routeRepository;
+    private final UserRepository userRepository;
     private final NotificationService notificationService;
 
     private final java.util.concurrent.ConcurrentHashMap<Long, List<ReroutingHistoryDto>> rerouteHistoryMap = new java.util.concurrent.ConcurrentHashMap<>();
@@ -183,6 +184,92 @@ public class TripService {
         return tripRepository.findByStatusWithDetails("IN_PROGRESS").stream()
                 .map(this::toResponse)
                 .collect(Collectors.toList());
+    }
+
+    @Transactional
+    public List<TripResponse> getMyTrips(String userEmail) {
+        User user = userRepository.findByEmail(userEmail)
+                .orElseThrow(() -> new ResourceNotFoundException("User not found with email: " + userEmail));
+
+        Driver driver = driverRepository.findByUserId(user.getId()).orElse(null);
+        if (driver == null) {
+            // If user has ADMIN or other role, return all recent trips
+            if (user.getRole() == Role.ADMIN || user.getRole() == Role.SCHOOL_ADMIN) {
+                return tripRepository.findAll().stream()
+                        .map(this::toResponse)
+                        .collect(Collectors.toList());
+            }
+            return List.of();
+        }
+
+        List<Trip> trips = tripRepository.findByDriverIdOrderByCreatedAtDesc(driver.getId());
+        if (trips.isEmpty()) {
+            // Auto-provision assigned trips for the driver from their assigned bus and route
+            Bus bus = busRepository.findAll().stream()
+                    .filter(b -> b.getDriver() != null && b.getDriver().getId().equals(driver.getId()))
+                    .findFirst()
+                    .orElse(busRepository.findAll().stream().findFirst().orElse(null));
+
+            Route route = (bus != null && bus.getRoute() != null)
+                    ? bus.getRoute()
+                    : routeRepository.findAll().stream().findFirst().orElse(null);
+
+            if (bus != null && route != null) {
+                Trip defaultTrip = Trip.builder()
+                        .bus(bus)
+                        .driver(driver)
+                        .route(route)
+                        .tripType("MORNING")
+                        .status("SCHEDULED")
+                        .startTime(LocalDateTime.now().withHour(7).withMinute(30).withSecond(0))
+                        .notes("Daily morning pickup trip")
+                        .build();
+                defaultTrip = tripRepository.save(defaultTrip);
+                trips = new java.util.ArrayList<>();
+                trips.add(defaultTrip);
+                log.info("Auto-provisioned default scheduled trip id={} for driver {}", defaultTrip.getId(), driver.getUser().getName());
+            }
+        }
+
+        return trips.stream().map(this::toResponse).collect(Collectors.toList());
+    }
+
+    @Transactional(readOnly = true)
+    public TripResponse getTripById(Long id) {
+        Trip trip = findOrThrow(id);
+        return toResponse(trip);
+    }
+
+    @Transactional(readOnly = true)
+    public List<TripResponse> getTripsByDriver(Long driverId) {
+        return tripRepository.findByDriverIdOrderByCreatedAtDesc(driverId).stream()
+                .map(this::toResponse)
+                .collect(Collectors.toList());
+    }
+
+    @Transactional
+    public TripResponse startScheduledTrip(Long tripId) {
+        Trip trip = findOrThrow(tripId);
+        if ("IN_PROGRESS".equals(trip.getStatus())) {
+            return toResponse(trip);
+        }
+
+        trip.setStatus("IN_PROGRESS");
+        trip.setStartTime(LocalDateTime.now());
+        trip = tripRepository.save(trip);
+
+        Bus bus = trip.getBus();
+        bus.setStatus("ON_ROUTE");
+        busRepository.save(bus);
+
+        notificationService.createSystemNotification(
+                "BUS_STARTED",
+                "Trip Started",
+                "Bus " + bus.getBusNumber() + " has started trip #" + trip.getId() + " on " + trip.getRoute().getName(),
+                trip, bus);
+
+        log.info("Started scheduled tripId={}, busId={}", tripId, bus.getId());
+        return toResponse(trip);
     }
 
     @Transactional(readOnly = true)

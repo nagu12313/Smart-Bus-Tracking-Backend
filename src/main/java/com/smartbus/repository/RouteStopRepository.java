@@ -18,5 +18,7 @@ public interface RouteStopRepository extends JpaRepository<RouteStop, Long> {
     @Query("SELECT rs FROM RouteStop rs JOIN FETCH rs.stop JOIN FETCH rs.route ORDER BY rs.route.id ASC, rs.stopOrder ASC")
     List<RouteStop> findAllWithStop();
 
-    void deleteByRouteId(Long routeId);
+    @org.springframework.data.jpa.repository.Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("DELETE FROM RouteStop rs WHERE rs.route.id = :routeId")
+    void deleteByRouteId(@Param("routeId") Long routeId);
 }

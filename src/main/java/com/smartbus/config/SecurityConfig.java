@@ -23,6 +23,7 @@ import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
@@ -133,8 +134,12 @@ public class SecurityConfig {
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration config = new CorsConfiguration();
 
-        // Allow React frontend origins (exact URLs and Vercel wildcard patterns)
-        List<String> origins = Arrays.asList(allowedOrigins.split(","));
+        // Allow React frontend origins (exact URLs, LAN/mobile IP, and Vercel wildcard patterns)
+        List<String> origins = new ArrayList<>(Arrays.asList(allowedOrigins.split(",")));
+        origins.add("http://192.168.*:*");
+        origins.add("http://10.*:*");
+        origins.add("http://172.*:*");
+        origins.add("https://*.vercel.app");
         config.setAllowedOriginPatterns(origins);
 
         config.setAllowedMethods(List.of("GET","POST","PUT","DELETE","PATCH","OPTIONS"));

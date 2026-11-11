@@ -39,24 +39,41 @@ public class GpsValidationService {
 
         // 1. Basic coordinate boundary check
         if (lat == null || lng == null || Double.isNaN(lat) || Double.isNaN(lng)) {
+            String reason = "Latitude or longitude is null or NaN";
+            log.error("[GPS REJECTION] Bus {}: {}", request.getBusId(), reason);
             return ValidationResult.builder()
                     .valid(false)
-                    .rejectionReason("Latitude or longitude is null/NaN")
+                    .rejectionReason(reason)
                     .build();
         }
 
+        // Check for reversed latitude and longitude (e.g. India coordinates reversed: lat ~78, lng ~16)
+        if (lat > 60.0 && lat <= 90.0 && lng >= 5.0 && lng <= 40.0) {
+            log.warn("[GPS COORDINATES REVERSED] Detected reversed coordinates for bus {}: lat={}, lng={}. Inverting to lat={}, lng={}",
+                    request.getBusId(), lat, lng, lng, lat);
+            double temp = lat;
+            lat = lng;
+            lng = temp;
+            request.setLatitude(lat);
+            request.setLongitude(lng);
+        }
+
         if (lat < -90.0 || lat > 90.0 || lng < -180.0 || lng > 180.0) {
+            String reason = String.format("Coordinates out of range: (%.6f, %.6f). Lat must be [-90, 90], Lng [-180, 180]", lat, lng);
+            log.error("[GPS REJECTION] Bus {}: {}", request.getBusId(), reason);
             return ValidationResult.builder()
                     .valid(false)
-                    .rejectionReason("Coordinates out of range: (" + lat + ", " + lng + ")")
+                    .rejectionReason(reason)
                     .build();
         }
 
         // 2. Reject Null Island (0.0, 0.0)
         if (Math.abs(lat) < 0.0001 && Math.abs(lng) < 0.0001) {
+            String reason = "Coordinates point to Null Island (0,0)";
+            log.error("[GPS REJECTION] Bus {}: {}", request.getBusId(), reason);
             return ValidationResult.builder()
                     .valid(false)
-                    .rejectionReason("Coordinates point to Null Island (0,0)")
+                    .rejectionReason(reason)
                     .build();
         }
 
@@ -76,11 +93,11 @@ public class GpsValidationService {
             reliableForSnapping = true;
         } else {
             accuracyDesc = String.format("Approximate Location (±%.0fm)", accuracy);
-            reliableForSnapping = false; // Do not force snap to parallel roads if accuracy is weak!
+            reliableForSnapping = false; // Do not force snap to parallel roads if accuracy is weak
         }
 
         if (accuracy > MAX_ACCEPTABLE_ACCURACY_METERS) {
-            log.warn("GPS ping for bus {} has very poor accuracy ({}m > {}m limit)",
+            log.warn("GPS ping for bus {} has weak accuracy ({}m > {}m limit)",
                     request.getBusId(), accuracy, MAX_ACCEPTABLE_ACCURACY_METERS);
         }
 
@@ -88,38 +105,42 @@ public class GpsValidationService {
         LocalDateTime now = LocalDateTime.now();
         LocalDateTime gpsTime = request.getGpsTime() != null ? request.getGpsTime() : now;
         long futureSkewSeconds = Duration.between(now, gpsTime).getSeconds();
-        if (futureSkewSeconds > 180) { // > 3 min in future
+        if (futureSkewSeconds > 600) { // > 10 min in future
+            String reason = String.format("GPS timestamp is too far in future (%ds)", futureSkewSeconds);
+            log.error("[GPS REJECTION] Bus {}: {}", request.getBusId(), reason);
             return ValidationResult.builder()
                     .valid(false)
-                    .rejectionReason("GPS timestamp is too far in future (" + futureSkewSeconds + "s)")
+                    .rejectionReason(reason)
                     .build();
         }
 
         long pastSkewSeconds = Duration.between(gpsTime, now).getSeconds();
         if (pastSkewSeconds > 86400) { // > 24 hours old
+            String reason = String.format("GPS packet is older than 24 hours (%ds)", pastSkewSeconds);
+            log.error("[GPS REJECTION] Bus {}: {}", request.getBusId(), reason);
             return ValidationResult.builder()
                     .valid(false)
-                    .rejectionReason("GPS packet is older than 24 hours")
+                    .rejectionReason(reason)
                     .build();
         }
 
-        // 5. Monotonic Timestamp Check — reject delayed / out-of-order packets older than current position
+        // 5. Monotonic Timestamp Check — prevent delayed / out-of-order packets from overwriting newer locations
         if (previousLocation != null) {
             LocalDateTime prevGpsTime = previousLocation.getGpsTime() != null
                     ? previousLocation.getGpsTime()
                     : previousLocation.getReceivedAt();
-            if (prevGpsTime != null && gpsTime.isBefore(prevGpsTime.minusSeconds(1))) {
-                log.warn("Rejecting delayed/out-of-order GPS packet for bus {}: packet timestamp {} is older than current latest {}",
-                        request.getBusId(), gpsTime, prevGpsTime);
+            if (prevGpsTime != null && gpsTime.isBefore(prevGpsTime.minusSeconds(3))) {
+                String reason = String.format("Out-of-order GPS update: packet timestamp %s is older than current recorded latest %s",
+                        gpsTime, prevGpsTime);
+                log.warn("[GPS REJECTION] Bus {}: {}", request.getBusId(), reason);
                 return ValidationResult.builder()
                         .valid(false)
-                        .rejectionReason(String.format("Out-of-order GPS update: packet timestamp %s is older than current latest %s",
-                                gpsTime, prevGpsTime))
+                        .rejectionReason(reason)
                         .build();
             }
         }
 
-        // 6. Teleportation / Jump Detection
+        // 6. Progressive Movement & Speed Handling (Do not reject valid coordinates on location relocation/spoofing!)
         double reportedSpeed = request.getSpeed() != null ? Math.max(0.0, request.getSpeed()) : 0.0;
         double speed = reportedSpeed;
 
@@ -133,18 +154,18 @@ public class GpsValidationService {
                 long elapsedSeconds = Math.max(1, Duration.between(prevTime, gpsTime).abs().getSeconds());
                 double calculatedSpeedKmh = (distMeters / elapsedSeconds) * 3.6;
 
-                // If calculated speed implies impossible teleportation (> 140 km/h) over a large distance (> 150m) in < 10 seconds:
-                if (calculatedSpeedKmh > MAX_REALISTIC_SPEED_KMH && distMeters > 150.0 && elapsedSeconds < 10) {
-                    log.warn("Rejecting impossible GPS jump for bus {}: jumped {:.1f}m in {}s (implied speed {:.1f} km/h)",
-                            request.getBusId(), distMeters, elapsedSeconds, calculatedSpeedKmh);
-                    return ValidationResult.builder()
-                            .valid(false)
-                            .rejectionReason(String.format("Impossible position jump: %.0fm in %ds", distMeters, elapsedSeconds))
-                            .build();
-                }
-
-                // If moving and speed was reported as 0, infer speed from real distance
-                if (speed < 1.0 && calculatedSpeedKmh >= 5.0 && calculatedSpeedKmh <= MAX_REALISTIC_SPEED_KMH) {
+                // If position jumped significantly (e.g. test starting, relocation, or spoofing track initiation)
+                if (calculatedSpeedKmh > MAX_REALISTIC_SPEED_KMH && distMeters > 150.0) {
+                    log.info("Bus {} relocation or new track initiated: moved {:.1f}m in {}s. Accepting valid GPS coordinates ({}, {}).",
+                            request.getBusId(), distMeters, elapsedSeconds, lat, lng);
+                    // Use reported speed if reasonable, else 0
+                    if (reportedSpeed > 0 && reportedSpeed <= MAX_REALISTIC_SPEED_KMH) {
+                        speed = reportedSpeed;
+                    } else {
+                        speed = 0.0;
+                    }
+                } else if (speed < 1.0 && calculatedSpeedKmh >= 3.0 && calculatedSpeedKmh <= MAX_REALISTIC_SPEED_KMH) {
+                    // Infer speed from successive valid updates
                     speed = Math.round(calculatedSpeedKmh * 10.0) / 10.0;
                 }
             }

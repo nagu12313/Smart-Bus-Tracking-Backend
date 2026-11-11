@@ -2,6 +2,7 @@ package com.smartbus.controller;
 
 import com.smartbus.dto.request.TransportChatMessageRequest;
 import com.smartbus.dto.response.ApiResponse;
+import com.smartbus.dto.response.TransportChatInitResponse;
 import com.smartbus.dto.response.TransportChatMessageResponse;
 import com.smartbus.entity.User;
 import com.smartbus.exception.BadRequestException;
@@ -31,6 +32,15 @@ public class TransportChatController {
 
     private final TransportChatService chatService;
     private final UserRepository userRepository;
+
+    @GetMapping("/init")
+    @Operation(summary = "Get dynamic role-specific runtime context and suggested questions")
+    public ResponseEntity<ApiResponse<TransportChatInitResponse>> getInitContext(
+            @AuthenticationPrincipal UserDetails userDetails) {
+        User user = getAuthenticatedUser(userDetails);
+        TransportChatInitResponse init = chatService.getInitContext(user);
+        return ResponseEntity.ok(ApiResponse.success(init));
+    }
 
     @PostMapping("/message")
     @Operation(summary = "Send a question to Smart Transport Assistant")

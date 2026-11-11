@@ -9,5 +9,6 @@ public enum Role {
     SCHOOL_ADMIN,  // School-level admin access
     DRIVER,        // Driver dashboard + trip controls
     STUDENT,       // Student view: own bus + tracking
-    PARENT         // Parent view: child's bus + tracking
+    PARENT,        // Parent view: child's bus + tracking
+    TEST_USER      // Dedicated mock live tracking test user (development only)
 }

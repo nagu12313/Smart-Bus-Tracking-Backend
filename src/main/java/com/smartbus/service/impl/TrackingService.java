@@ -11,6 +11,8 @@ import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -93,22 +95,25 @@ public class TrackingService {
         Bus bus = busRepository.findById(request.getBusId())
                 .orElseThrow(() -> new ResourceNotFoundException("Bus", request.getBusId()));
 
-        // Validate device token if the bus has one configured
-        if (bus.getGpsDeviceToken() != null && !bus.getGpsDeviceToken().isBlank()) {
+        // Validate device token if the bus has one configured, unless request is from an authenticated user (driver/admin)
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        boolean isAuthenticatedUser = auth != null && auth.isAuthenticated()
+                && !"anonymousUser".equals(auth.getPrincipal());
+
+        if (!isAuthenticatedUser && bus.getGpsDeviceToken() != null && !bus.getGpsDeviceToken().isBlank()) {
             if (deviceToken == null || !deviceToken.equals(bus.getGpsDeviceToken())) {
+                log.error("[GPS REJECTION] BusId: {}, Reason: Invalid GPS device token", bus.getId());
                 throw new BadRequestException("Invalid GPS device token for bus: " + request.getBusId());
             }
         }
 
         LocationResponse prevLocation = liveCache.get(bus.getId());
 
-        // 1. Strict GPS Validation (bounds, clock skew, jump detection, accuracy filter)
+        // 1. Strict GPS Validation (bounds, clock skew, accuracy filter, monotonic timestamp, coordinates reversal check)
         GpsValidationService.ValidationResult validation = gpsValidationService.validate(request, prevLocation);
         if (!validation.isValid()) {
-            log.warn("Rejected invalid GPS fix for bus {}: {}", bus.getId(), validation.getRejectionReason());
-            if (prevLocation != null) {
-                return prevLocation;
-            }
+            log.error("[GPS REJECTION] BusId: {}, Lat: {}, Lng: {}, Reason: {}",
+                    bus.getId(), request.getLatitude(), request.getLongitude(), validation.getRejectionReason());
             throw new BadRequestException("Invalid GPS fix: " + validation.getRejectionReason());
         }
 
