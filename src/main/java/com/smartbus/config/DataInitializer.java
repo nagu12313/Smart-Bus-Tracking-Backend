@@ -31,7 +31,6 @@ import java.util.Map;
  * - driver@edutrack.com   -> driver123    (DRIVER)
  * - parent@edutrack.com   -> parent123    (PARENT)
  * - student@edutrack.com  -> student123   (STUDENT)
- * - mocktest@edutrack.com -> mocktest123  (TEST_USER - Mock Live Tracking)
  */
 @Component
 @RequiredArgsConstructor
@@ -48,12 +47,16 @@ public class DataInitializer implements CommandLineRunner {
 
     @Override
     public void run(String... args) {
+        // Clean up legacy mock tester account if present
+        try {
+            userRepository.findByEmail("mocktest@edutrack.com").ifPresent(userRepository::delete);
+        } catch (Exception ignored) {}
+
         Map<String, String[]> demoAccounts = Map.of(
             "admin@edutrack.com",    new String[]{"Administrator", "admin123", "ADMIN"},
             "driver@edutrack.com",   new String[]{"Ramesh Kumar", "driver123", "DRIVER"},
             "parent@edutrack.com",   new String[]{"Priya Sharma", "parent123", "PARENT"},
-            "student@edutrack.com",  new String[]{"Ananya Sharma", "student123", "STUDENT"},
-            "mocktest@edutrack.com", new String[]{"Mock Test User", "mocktest123", "TEST_USER"}
+            "student@edutrack.com",  new String[]{"Ananya Sharma", "student123", "STUDENT"}
         );
 
         demoAccounts.forEach((email, details) -> {
