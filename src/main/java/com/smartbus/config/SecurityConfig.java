@@ -94,6 +94,9 @@ public class SecurityConfig {
                 // GPS device endpoint — authenticated via device token (custom header), not JWT
                 .requestMatchers(HttpMethod.POST, "/api/tracking/location", "/api/tracking/device/location").permitAll()
 
+                // Driver Phone GPS tracking endpoint — authenticated driver or admin
+                .requestMatchers(HttpMethod.POST, "/api/tracking/driver/location").hasAnyRole("DRIVER","ADMIN","SCHOOL_ADMIN")
+
                 // Admin & Support endpoints
                 .requestMatchers("/api/admin/support/**").hasAnyRole("ADMIN", "SCHOOL_ADMIN")
                 .requestMatchers("/api/admin/**").hasRole("ADMIN")

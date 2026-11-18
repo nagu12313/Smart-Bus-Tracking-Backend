@@ -51,6 +51,25 @@ public class TrackingController {
     private final TransportChatSecurityService securityService;
 
     /**
+     * Driver Phone GPS: Submit real-time location.
+     * Authenticated driver's GPS location directly sets the real-time position of the assigned bus.
+     * busId and tripId are determined server-side from driver's authenticated session.
+     */
+    @PostMapping("/driver/location")
+    @SecurityRequirement(name = "bearerAuth")
+    @Operation(summary = "Driver Phone GPS: submit real-time location",
+               description = "Authenticated driver sends phone GPS coordinates which directly updates their assigned bus.")
+    public ResponseEntity<ApiResponse<LocationResponse>> recordDriverLocation(
+            @Valid @RequestBody LocationUpdateRequest request,
+            @AuthenticationPrincipal UserDetails userDetails) {
+        if (userDetails == null) {
+            throw new AccessDeniedException("Authentication required to submit driver location");
+        }
+        LocationResponse response = trackingService.recordDriverLocation(request, userDetails.getUsername());
+        return ResponseEntity.ok(ApiResponse.success("Driver location recorded successfully", response));
+    }
+
+    /**
      * GPS device endpoint — no JWT, authenticated via X-Device-Token header.
      */
     @PostMapping("/location")

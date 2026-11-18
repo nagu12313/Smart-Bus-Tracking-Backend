@@ -15,6 +15,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -281,8 +282,24 @@ public class TripService {
     }
 
     @Transactional
-    public LocationResponse recordTripLocation(Long tripId, LocationUpdateRequest request) {
+    public LocationResponse recordTripLocation(Long tripId, LocationUpdateRequest request, String userEmail) {
         Trip trip = findOrThrow(tripId);
+
+        if (userEmail != null) {
+            User user = userRepository.findByEmail(userEmail).orElse(null);
+            if (user != null) {
+                if (user.getRole() == Role.PARENT || user.getRole() == Role.STUDENT) {
+                    throw new AccessDeniedException("Unauthorized: Parents and students cannot publish trip GPS coordinates");
+                }
+                if (user.getRole() == Role.DRIVER) {
+                    Driver driver = driverRepository.findByUserId(user.getId()).orElse(null);
+                    if (driver == null || trip.getDriver() == null || !trip.getDriver().getId().equals(driver.getId())) {
+                        throw new AccessDeniedException("Access Denied: You are not assigned to trip #" + tripId);
+                    }
+                }
+            }
+        }
+
         if (request.getBusId() == null && trip.getBus() != null) {
             request.setBusId(trip.getBus().getId());
         }

@@ -79,8 +79,10 @@ public class TripController {
                description = "The driver's phone location directly sets the real-time position of the assigned bus.")
     public ResponseEntity<ApiResponse<LocationResponse>> updateTripLocation(
             @PathVariable Long tripId,
-            @Valid @RequestBody LocationUpdateRequest request) {
-        LocationResponse response = tripService.recordTripLocation(tripId, request);
+            @Valid @RequestBody LocationUpdateRequest request,
+            @AuthenticationPrincipal UserDetails userDetails) {
+        String username = userDetails != null ? userDetails.getUsername() : null;
+        LocationResponse response = tripService.recordTripLocation(tripId, request, username);
         return ResponseEntity.ok(ApiResponse.success("Driver location updated for trip " + tripId, response));
     }
 

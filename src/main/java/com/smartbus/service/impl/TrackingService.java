@@ -11,6 +11,7 @@ import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
@@ -38,6 +39,8 @@ public class TrackingService {
     private final TripRepository tripRepository;
     private final BusLatestLocationRepository busLatestLocationRepository;
     private final BusLocationHistoryRepository busLocationHistoryRepository;
+    private final DriverRepository driverRepository;
+    private final UserRepository userRepository;
     private final org.springframework.transaction.support.TransactionTemplate transactionTemplate;
     private final org.springframework.beans.factory.ObjectProvider<org.springframework.messaging.simp.SimpMessagingTemplate> messagingTemplateProvider;
 
@@ -88,6 +91,71 @@ public class TrackingService {
     }
 
     /**
+     * Driver phone GPS ingestion endpoint: strictly validates authenticated driver,
+     * assigns trip and vehicle, and records high-accuracy real-time telemetry.
+     */
+    @Transactional
+    public LocationResponse recordDriverLocation(LocationUpdateRequest request, String userEmail) {
+        User user = userRepository.findByEmail(userEmail)
+                .orElseThrow(() -> new ResourceNotFoundException("User not found: " + userEmail));
+
+        Driver driver = null;
+        if (user.getRole() == Role.DRIVER) {
+            driver = driverRepository.findByUserId(user.getId())
+                    .orElseThrow(() -> new BadRequestException("Driver profile not found for user: " + userEmail));
+        } else if (user.getRole() == Role.ADMIN || user.getRole() == Role.SCHOOL_ADMIN) {
+            if (request.getTripId() != null) {
+                Trip t = tripRepository.findById(request.getTripId()).orElse(null);
+                if (t != null) driver = t.getDriver();
+            }
+            if (driver == null && request.getBusId() != null) {
+                Bus b = busRepository.findById(request.getBusId()).orElse(null);
+                if (b != null) driver = b.getDriver();
+            }
+        } else {
+            throw new AccessDeniedException("Unauthorized: Only authenticated drivers or admins can publish GPS locations");
+        }
+
+        Trip trip = null;
+        if (request.getTripId() != null) {
+            trip = tripRepository.findById(request.getTripId())
+                    .orElseThrow(() -> new ResourceNotFoundException("Trip", request.getTripId()));
+            if (user.getRole() == Role.DRIVER && driver != null && trip.getDriver() != null
+                    && !trip.getDriver().getId().equals(driver.getId())) {
+                throw new AccessDeniedException("Access Denied: You are not assigned to trip #" + request.getTripId());
+            }
+        } else if (driver != null) {
+            trip = tripRepository.findTopByDriverIdAndStatusOrderByCreatedAtDesc(driver.getId(), "IN_PROGRESS")
+                    .orElse(null);
+        }
+
+        Bus bus = null;
+        if (trip != null && trip.getBus() != null) {
+            bus = trip.getBus();
+            request.setTripId(trip.getId());
+        } else if (request.getBusId() != null) {
+            bus = busRepository.findById(request.getBusId())
+                    .orElseThrow(() -> new ResourceNotFoundException("Bus", request.getBusId()));
+            if (user.getRole() == Role.DRIVER && driver != null && bus.getDriver() != null
+                    && !bus.getDriver().getId().equals(driver.getId())) {
+                throw new AccessDeniedException("Access Denied: You are not assigned to bus #" + bus.getId());
+            }
+        } else if (driver != null) {
+            List<Bus> assignedBuses = busRepository.findByDriverId(driver.getId());
+            if (!assignedBuses.isEmpty()) {
+                bus = assignedBuses.get(0);
+            }
+        }
+
+        if (bus == null) {
+            throw new BadRequestException("No bus is currently assigned to driver: " + (driver != null && driver.getUser() != null ? driver.getUser().getName() : userEmail));
+        }
+
+        request.setBusId(bus.getId());
+        return recordLocationInternal(request, bus, trip, driver);
+    }
+
+    /**
      * High-accuracy GPS record insertion with road matching and verified geocoding.
      */
     @Transactional
@@ -107,17 +175,53 @@ public class TrackingService {
         Bus bus = busRepository.findById(request.getBusId())
                 .orElseThrow(() -> new ResourceNotFoundException("Bus", request.getBusId()));
 
-        // Validate device token if the bus has one configured, unless request is from an authenticated user (driver/admin)
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
         boolean isAuthenticatedUser = auth != null && auth.isAuthenticated()
                 && !"anonymousUser".equals(auth.getPrincipal());
 
-        if (!isAuthenticatedUser && bus.getGpsDeviceToken() != null && !bus.getGpsDeviceToken().isBlank()) {
-            if (deviceToken == null || !deviceToken.equals(bus.getGpsDeviceToken())) {
-                log.error("[GPS REJECTION] BusId: {}, Reason: Invalid GPS device token", bus.getId());
-                throw new BadRequestException("Invalid GPS device token for bus: " + request.getBusId());
+        Driver boundDriver = null;
+        if (isAuthenticatedUser) {
+            User user = userRepository.findByEmail(auth.getName()).orElse(null);
+            if (user != null) {
+                if (user.getRole() == Role.PARENT || user.getRole() == Role.STUDENT) {
+                    throw new AccessDeniedException("Parents and students cannot publish bus GPS coordinates");
+                }
+                if (user.getRole() == Role.DRIVER) {
+                    boundDriver = driverRepository.findByUserId(user.getId()).orElse(null);
+                    if (boundDriver == null) {
+                        throw new AccessDeniedException("No driver profile found for user");
+                    }
+                    final Long driverId = boundDriver.getId();
+                    boolean assignedToBus = bus.getDriver() != null && bus.getDriver().getId().equals(driverId);
+                    boolean assignedToActiveTrip = tripRepository
+                            .findTopByBusIdAndStatusOrderByCreatedAtDesc(bus.getId(), "IN_PROGRESS")
+                            .map(t -> t.getDriver() != null && t.getDriver().getId().equals(driverId))
+                            .orElse(false);
+                    if (!assignedToBus && !assignedToActiveTrip) {
+                        throw new AccessDeniedException("Driver is not assigned to bus " + bus.getId());
+                    }
+                }
+            }
+        } else {
+            // Hardware device: MUST provide valid deviceToken
+            if (bus.getGpsDeviceToken() == null || bus.getGpsDeviceToken().isBlank()
+                    || deviceToken == null || !deviceToken.equals(bus.getGpsDeviceToken())) {
+                log.error("[GPS REJECTION] BusId: {}, Reason: Invalid or missing GPS device token", bus.getId());
+                throw new BadRequestException("Invalid or missing GPS device token for bus: " + request.getBusId());
             }
         }
+
+        Trip boundTrip = null;
+        if (request.getTripId() != null) {
+            boundTrip = tripRepository.findById(request.getTripId()).orElse(null);
+        } else {
+            boundTrip = tripRepository.findTopByBusIdAndStatusOrderByCreatedAtDesc(bus.getId(), "IN_PROGRESS").orElse(null);
+        }
+
+        return recordLocationInternal(request, bus, boundTrip, boundDriver);
+    }
+
+    private LocationResponse recordLocationInternal(LocationUpdateRequest request, Bus bus, Trip boundTrip, Driver boundDriver) {
 
         LocationResponse prevLocation = liveCache.get(bus.getId());
 
@@ -197,7 +301,9 @@ public class TrackingService {
                 .gpsTime(gpsTime)
                 .build();
 
-        if (request.getTripId() != null) {
+        if (boundTrip != null) {
+            location.setTrip(boundTrip);
+        } else if (request.getTripId() != null) {
             tripRepository.findById(request.getTripId()).ifPresent(location::setTrip);
         } else {
             tripRepository.findTopByBusIdAndStatusOrderByCreatedAtDesc(bus.getId(), "IN_PROGRESS").ifPresent(location::setTrip);
@@ -231,9 +337,10 @@ public class TrackingService {
         }
 
         // 8. Build Complete LocationResponse
-        Driver driver = location.getTrip() != null && location.getTrip().getDriver() != null
+        Driver driver = boundDriver != null ? boundDriver
+                : (location.getTrip() != null && location.getTrip().getDriver() != null
                 ? location.getTrip().getDriver()
-                : bus.getDriver();
+                : bus.getDriver());
 
         LocationResponse response = LocationResponse.builder()
                 .busId(bus.getId())
@@ -446,7 +553,7 @@ public class TrackingService {
     private LocationResponse checkStale(LocationResponse loc) {
         LocalDateTime refTime = loc.getReceivedAt() != null ? loc.getReceivedAt() : loc.getGpsTime();
         boolean isStale = refTime == null
-                || ChronoUnit.MINUTES.between(refTime, LocalDateTime.now()) > 3;
+                || ChronoUnit.MINUTES.between(refTime, LocalDateTime.now()) >= 2;
         loc.setIsStale(isStale);
         if (isStale) {
             loc.setSpeed(0.0);
@@ -460,7 +567,7 @@ public class TrackingService {
     private LocationResponse toResponse(Bus bus, BusLocation loc) {
         LocalDateTime refTime = loc.getCreatedAt() != null ? loc.getCreatedAt() : loc.getGpsTime();
         boolean isStale = refTime == null
-                || ChronoUnit.MINUTES.between(refTime, LocalDateTime.now()) > 3;
+                || ChronoUnit.MINUTES.between(refTime, LocalDateTime.now()) >= 2;
 
         Driver driver = loc.getTrip() != null && loc.getTrip().getDriver() != null
                 ? loc.getTrip().getDriver()
