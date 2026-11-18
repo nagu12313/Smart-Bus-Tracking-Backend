@@ -27,9 +27,9 @@ public class AuthController {
     @PostMapping("/send-otp")
     @Operation(summary = "Send OTP", description = "Send a 6-digit email verification code via Brevo or SMTP")
     public ResponseEntity<ApiResponse<String>> sendOtp(@Valid @RequestBody SendOtpRequest request) {
-        otpService.generateAndSendOtp(request.getEmail());
+        String otp = otpService.generateAndSendOtp(request.getEmail());
         return ResponseEntity.ok(ApiResponse.success(
-                "A 6-digit verification code has been sent to " + request.getEmail(), request.getEmail()));
+                "A 6-digit verification code has been sent to " + request.getEmail(), otp));
     }
 
     @PostMapping("/verify-otp")
@@ -59,9 +59,9 @@ public class AuthController {
     @PostMapping("/forgot-password")
     @Operation(summary = "Forgot Password OTP", description = "Send a 6-digit password reset code to registered user email")
     public ResponseEntity<ApiResponse<String>> forgotPassword(@Valid @RequestBody SendOtpRequest request) {
-        otpService.generateAndSendPasswordResetOtp(request.getEmail());
+        String otp = otpService.generateAndSendPasswordResetOtp(request.getEmail());
         return ResponseEntity.ok(ApiResponse.success(
-                "A password reset code has been sent to " + request.getEmail(), request.getEmail()));
+                "A password reset code has been sent to " + request.getEmail(), otp));
     }
 
     @PostMapping("/reset-password")

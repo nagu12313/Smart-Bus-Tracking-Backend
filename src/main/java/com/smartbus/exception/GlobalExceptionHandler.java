@@ -83,8 +83,43 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(org.springframework.dao.DataIntegrityViolationException.class)
     public ResponseEntity<ApiResponse<Void>> handleDataIntegrityViolation(org.springframework.dao.DataIntegrityViolationException ex) {
         log.warn("Database integrity violation: {}", ex.getMessage());
+
+        String rootMsg = ex.getMostSpecificCause() != null ? ex.getMostSpecificCause().getMessage() : ex.getMessage();
+        String userFriendlyMsg = "Operation cannot be completed because this record is referenced by other data or violates a unique constraint.";
+
+        if (rootMsg != null) {
+            String lower = rootMsg.toLowerCase();
+            if (lower.contains("duplicate entry")) {
+                java.util.regex.Matcher m = java.util.regex.Pattern.compile("(?i)duplicate entry '([^']+)' for key '([^']+)'").matcher(rootMsg);
+                if (m.find()) {
+                    String val = m.group(1);
+                    String key = m.group(2);
+                    String cleanKey = key.contains(".") ? key.substring(key.lastIndexOf(".") + 1) : key;
+                    userFriendlyMsg = String.format("A record with %s '%s' already exists. Please choose a unique value.", cleanKey.replace("_", " "), val);
+                } else {
+                    userFriendlyMsg = "A record with this unique identifier already exists. Please check your input.";
+                }
+            } else if (lower.contains("cannot delete or update a parent row") || lower.contains("foreign key constraint fails")) {
+                if (lower.contains("`trips`") || lower.contains(".trips")) {
+                    userFriendlyMsg = "Cannot delete this record because it is referenced in trip history. Please reassign or remove the associated trips first, or update its status to INACTIVE.";
+                } else if (lower.contains("`students`") || lower.contains(".students")) {
+                    userFriendlyMsg = "Cannot delete this record because students are currently assigned to it. Please reassign the students first.";
+                } else if (lower.contains("`buses`") || lower.contains(".buses")) {
+                    userFriendlyMsg = "Cannot delete this record because it is currently assigned to a bus. Please reassign the bus first.";
+                } else if (lower.contains("`attendance`") || lower.contains(".attendance")) {
+                    userFriendlyMsg = "Cannot delete this record because it has linked attendance records.";
+                } else if (lower.contains("`route_stops`") || lower.contains(".route_stops")) {
+                    userFriendlyMsg = "Cannot delete this record because it is currently part of an active route.";
+                } else {
+                    userFriendlyMsg = "Cannot delete this record because other active records depend on it. Please remove or reassign linked records first.";
+                }
+            } else if (lower.contains("cannot add or update a child row")) {
+                userFriendlyMsg = "The referenced associated record (such as bus, driver, or route) does not exist.";
+            }
+        }
+
         return ResponseEntity.status(HttpStatus.CONFLICT)
-                .body(ApiResponse.error("Operation cannot be completed because this record is referenced by other data or violates a unique constraint."));
+                .body(ApiResponse.error(userFriendlyMsg));
     }
 
     /** 500 — Unexpected errors */
