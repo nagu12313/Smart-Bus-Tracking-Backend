@@ -1,8 +1,10 @@
 package com.smartbus.service.impl;
 
+import com.smartbus.dto.request.LocationUpdateRequest;
 import com.smartbus.dto.request.ReportRoadIssueRequest;
 import com.smartbus.dto.request.RerouteRequest;
 import com.smartbus.dto.request.TripStartRequest;
+import com.smartbus.dto.response.LocationResponse;
 import com.smartbus.dto.response.ReroutingHistoryDto;
 import com.smartbus.dto.response.TripResponse;
 import com.smartbus.entity.*;
@@ -31,6 +33,7 @@ public class TripService {
     private final RouteRepository routeRepository;
     private final UserRepository userRepository;
     private final NotificationService notificationService;
+    private final TrackingService trackingService;
 
     private final java.util.concurrent.ConcurrentHashMap<Long, List<ReroutingHistoryDto>> rerouteHistoryMap = new java.util.concurrent.ConcurrentHashMap<>();
     private final java.util.concurrent.ConcurrentHashMap<Long, String> activeTripAlternativeRouteMap = new java.util.concurrent.ConcurrentHashMap<>();
@@ -275,6 +278,16 @@ public class TripService {
     @Transactional(readOnly = true)
     public Page<TripResponse> getAllTrips(Pageable pageable) {
         return tripRepository.findAll(pageable).map(this::toResponse);
+    }
+
+    @Transactional
+    public LocationResponse recordTripLocation(Long tripId, LocationUpdateRequest request) {
+        Trip trip = findOrThrow(tripId);
+        if (request.getBusId() == null && trip.getBus() != null) {
+            request.setBusId(trip.getBus().getId());
+        }
+        request.setTripId(tripId);
+        return trackingService.recordLocation(request, null);
     }
 
     private Trip findOrThrow(Long id) {

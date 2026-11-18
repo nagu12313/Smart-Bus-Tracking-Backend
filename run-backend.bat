@@ -10,10 +10,10 @@ cd /d "%~dp0"
 :: Ensure Java 17 is accessible
 if exist "C:\Program Files\Eclipse Adoptium\jdk-17.0.20.101-hotspot\bin\java.exe" (
     set "JAVA_HOME=C:\Program Files\Eclipse Adoptium\jdk-17.0.20.101-hotspot"
-    set "PATH=%JAVA_HOME%\bin;!PATH!"
+    set "PATH=C:\Program Files\Eclipse Adoptium\jdk-17.0.20.101-hotspot\bin;%PATH%"
 ) else if exist "C:\Program Files\Eclipse Adoptium\jdk-17.0.20.1-hotspot\bin\java.exe" (
     set "JAVA_HOME=C:\Program Files\Eclipse Adoptium\jdk-17.0.20.1-hotspot"
-    set "PATH=%JAVA_HOME%\bin;!PATH!"
+    set "PATH=C:\Program Files\Eclipse Adoptium\jdk-17.0.20.1-hotspot\bin;%PATH%"
 )
 
 :: Verify java is working

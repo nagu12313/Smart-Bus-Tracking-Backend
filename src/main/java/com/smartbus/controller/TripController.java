@@ -1,9 +1,11 @@
 package com.smartbus.controller;
 
+import com.smartbus.dto.request.LocationUpdateRequest;
 import com.smartbus.dto.request.ReportRoadIssueRequest;
 import com.smartbus.dto.request.RerouteRequest;
 import com.smartbus.dto.request.TripStartRequest;
 import com.smartbus.dto.response.ApiResponse;
+import com.smartbus.dto.response.LocationResponse;
 import com.smartbus.dto.response.ReroutingHistoryDto;
 import com.smartbus.dto.response.TripResponse;
 import com.smartbus.service.impl.TripService;
@@ -70,6 +72,16 @@ public class TripController {
     public ResponseEntity<ApiResponse<TripResponse>> endTrip(@PathVariable Long id) {
         return ResponseEntity.ok(ApiResponse.success("Trip ended successfully",
                 tripService.endTrip(id)));
+    }
+
+    @PostMapping("/{tripId}/location")
+    @Operation(summary = "Driver submits current GPS location for active trip",
+               description = "The driver's phone location directly sets the real-time position of the assigned bus.")
+    public ResponseEntity<ApiResponse<LocationResponse>> updateTripLocation(
+            @PathVariable Long tripId,
+            @Valid @RequestBody LocationUpdateRequest request) {
+        LocationResponse response = tripService.recordTripLocation(tripId, request);
+        return ResponseEntity.ok(ApiResponse.success("Driver location updated for trip " + tripId, response));
     }
 
     @GetMapping("/active")

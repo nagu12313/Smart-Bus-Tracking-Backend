@@ -92,6 +92,18 @@ public class TrackingService {
      */
     @Transactional
     public LocationResponse recordLocation(LocationUpdateRequest request, String deviceToken) {
+        if (request.getBusId() == null && request.getTripId() != null) {
+            tripRepository.findById(request.getTripId()).ifPresent(trip -> {
+                if (trip.getBus() != null) {
+                    request.setBusId(trip.getBus().getId());
+                }
+            });
+        }
+
+        if (request.getBusId() == null) {
+            throw new BadRequestException("Bus ID or active Trip ID must be provided");
+        }
+
         Bus bus = busRepository.findById(request.getBusId())
                 .orElseThrow(() -> new ResourceNotFoundException("Bus", request.getBusId()));
 

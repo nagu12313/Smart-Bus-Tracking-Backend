@@ -18,7 +18,6 @@ import java.time.LocalDateTime;
 @AllArgsConstructor
 public class LocationUpdateRequest {
 
-    @NotNull(message = "Bus ID is required")
     private Long busId;
 
     @NotNull(message = "Latitude is required")
