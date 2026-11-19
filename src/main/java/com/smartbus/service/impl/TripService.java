@@ -260,6 +260,7 @@ public class TripService {
 
         trip.setStatus("IN_PROGRESS");
         trip.setStartTime(LocalDateTime.now());
+        trip.setEndTime(null);
         trip = tripRepository.save(trip);
 
         Bus bus = trip.getBus();
