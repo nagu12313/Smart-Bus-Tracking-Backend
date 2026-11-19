@@ -206,14 +206,71 @@ public class TripService {
             return List.of();
         }
 
-        List<Trip> trips = tripRepository.findByDriverIdOrderByCreatedAtDesc(driver.getId());
-        if (trips.isEmpty()) {
-            // Auto-provision assigned trips for the driver from their assigned bus and route
-            Bus bus = busRepository.findAll().stream()
-                    .filter(b -> b.getDriver() != null && b.getDriver().getId().equals(driver.getId()))
-                    .findFirst()
-                    .orElse(busRepository.findAll().stream().findFirst().orElse(null));
+        // 1. Find the bus currently assigned to this driver
+        Bus assignedBus = busRepository.findAll().stream()
+                .filter(b -> b.getDriver() != null && b.getDriver().getId().equals(driver.getId()))
+                .findFirst()
+                .orElse(null);
 
+        List<Trip> trips = new java.util.ArrayList<>(tripRepository.findByDriverIdOrderByCreatedAtDesc(driver.getId()));
+
+        if (assignedBus != null) {
+            boolean hasActiveOrScheduledForAssignedBus = false;
+
+            for (Trip t : trips) {
+                // If the trip is active or scheduled, ensure it reflects the driver's currently assigned bus & route
+                if (!"COMPLETED".equals(t.getStatus())) {
+                    if (t.getBus() == null || !t.getBus().getId().equals(assignedBus.getId())) {
+                        log.info("Updating active trip #{} from bus {} to driver's assigned bus {}",
+                                t.getId(), t.getBus() != null ? t.getBus().getBusNumber() : "null", assignedBus.getBusNumber());
+                        t.setBus(assignedBus);
+                        if (assignedBus.getRoute() != null) {
+                            t.setRoute(assignedBus.getRoute());
+                        }
+                        tripRepository.save(t);
+                    }
+                    hasActiveOrScheduledForAssignedBus = true;
+                } else if (t.getBus() != null && t.getBus().getId().equals(assignedBus.getId())) {
+                    hasActiveOrScheduledForAssignedBus = true;
+                }
+            }
+
+            // If the driver has no trip for their currently assigned bus, auto-provision one now
+            if (!hasActiveOrScheduledForAssignedBus) {
+                Route route = (assignedBus.getRoute() != null)
+                        ? assignedBus.getRoute()
+                        : routeRepository.findAll().stream().findFirst().orElse(null);
+
+                Trip newTrip = Trip.builder()
+                        .bus(assignedBus)
+                        .driver(driver)
+                        .route(route)
+                        .tripType("MORNING")
+                        .status("SCHEDULED")
+                        .startTime(LocalDateTime.now().withHour(7).withMinute(30).withSecond(0))
+                        .notes("Daily scheduled trip for " + assignedBus.getBusNumber())
+                        .build();
+                newTrip = tripRepository.save(newTrip);
+                trips.add(0, newTrip);
+                log.info("Auto-provisioned scheduled trip #{} for driver {} on assigned bus {}",
+                        newTrip.getId(), driver.getUser() != null ? driver.getUser().getName() : driver.getId(), assignedBus.getBusNumber());
+            }
+
+            // Prioritize trips belonging to the driver's currently assigned bus at the top of the list
+            trips.sort((a, b) -> {
+                boolean aMatch = a.getBus() != null && a.getBus().getId().equals(assignedBus.getId());
+                boolean bMatch = b.getBus() != null && b.getBus().getId().equals(assignedBus.getId());
+                if (aMatch && !bMatch) return -1;
+                if (!aMatch && bMatch) return 1;
+                boolean aActive = "IN_PROGRESS".equals(a.getStatus());
+                boolean bActive = "IN_PROGRESS".equals(b.getStatus());
+                if (aActive && !bActive) return -1;
+                if (!aActive && bActive) return 1;
+                return b.getId().compareTo(a.getId());
+            });
+        } else if (trips.isEmpty()) {
+            // Auto-provision assigned trips for the driver from any available bus
+            Bus bus = busRepository.findAll().stream().findFirst().orElse(null);
             Route route = (bus != null && bus.getRoute() != null)
                     ? bus.getRoute()
                     : routeRepository.findAll().stream().findFirst().orElse(null);
@@ -229,7 +286,6 @@ public class TripService {
                         .notes("Daily morning pickup trip")
                         .build();
                 defaultTrip = tripRepository.save(defaultTrip);
-                trips = new java.util.ArrayList<>();
                 trips.add(defaultTrip);
                 log.info("Auto-provisioned default scheduled trip id={} for driver {}", defaultTrip.getId(), driver.getUser().getName());
             }

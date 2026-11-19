@@ -5,12 +5,14 @@ import com.smartbus.dto.response.BusResponse;
 import com.smartbus.entity.Bus;
 import com.smartbus.entity.Driver;
 import com.smartbus.entity.Route;
+import com.smartbus.entity.Trip;
 import com.smartbus.exception.BadRequestException;
 import com.smartbus.exception.DuplicateResourceException;
 import com.smartbus.exception.ResourceNotFoundException;
 import com.smartbus.repository.BusRepository;
 import com.smartbus.repository.DriverRepository;
 import com.smartbus.repository.RouteRepository;
+import com.smartbus.repository.TripRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
@@ -29,6 +31,7 @@ public class BusService {
     private final BusRepository busRepository;
     private final DriverRepository driverRepository;
     private final RouteRepository routeRepository;
+    private final TripRepository tripRepository;
 
     private volatile List<BusResponse> cachedBuses = null;
     private volatile long lastCacheTime = 0;
@@ -123,7 +126,31 @@ public class BusService {
         if (request.getDriverId() != null) {
             Driver driver = driverRepository.findById(request.getDriverId())
                     .orElseThrow(() -> new ResourceNotFoundException("Driver", request.getDriverId()));
+
+            // If this driver was previously assigned to any other bus, unassign them from that other bus
+            busRepository.findAll().stream()
+                    .filter(b -> (bus.getId() == null || !b.getId().equals(bus.getId()))
+                            && b.getDriver() != null && b.getDriver().getId().equals(driver.getId()))
+                    .forEach(other -> {
+                        other.setDriver(null);
+                        busRepository.save(other);
+                        log.info("Unassigned driver {} from previous bus {}", driver.getId(), other.getBusNumber());
+                    });
+
             bus.setDriver(driver);
+
+            // Synchronize any active or scheduled trips for this driver to point to this bus
+            List<Trip> activeOrScheduledTrips = tripRepository.findByDriverIdOrderByCreatedAtDesc(driver.getId());
+            for (Trip t : activeOrScheduledTrips) {
+                if (!"COMPLETED".equals(t.getStatus())) {
+                    t.setBus(bus);
+                    if (bus.getRoute() != null) {
+                        t.setRoute(bus.getRoute());
+                    }
+                    tripRepository.save(t);
+                    log.info("Synchronized active trip #{} for driver {} to newly assigned bus {}", t.getId(), driver.getId(), bus.getBusNumber());
+                }
+            }
         } else {
             bus.setDriver(null);
         }
