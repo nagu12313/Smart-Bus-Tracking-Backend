@@ -25,6 +25,18 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b 1
 )
 
+:: Check if port 8080 is already running
+netstat -ano | findstr :8080 | findstr LISTENING >nul 2>&1
+if %ERRORLEVEL% EQU 0 (
+    echo ====================================================
+    echo [INFO] Port 8080 is ALREADY active and listening!
+    echo Backend is currently running at: http://localhost:8080
+    echo (To restart it, run stop-backend.bat first)
+    echo ====================================================
+    pause
+    exit /b 0
+)
+
 :: Load local .env if it exists (skip comments starting with #)
 if exist .env (
     for /f "usebackq eol=# tokens=1,* delims==" %%a in (".env") do (
