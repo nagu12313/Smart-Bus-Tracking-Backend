@@ -84,7 +84,8 @@ public class SecurityConfig {
 
             // Authorization rules
             .authorizeHttpRequests(auth -> auth
-                // Public endpoints — no token required
+                // Public endpoints — health check, docs, auth & location search
+                .requestMatchers("/", "/health", "/api/health", "/error").permitAll()
                 .requestMatchers("/api/auth/**").permitAll()
                 .requestMatchers("/api/locations/**").permitAll()
                 .requestMatchers("/ws/**", "/ws-tracking/**").permitAll()
@@ -143,6 +144,7 @@ public class SecurityConfig {
         origins.add("http://10.*:*");
         origins.add("http://172.*:*");
         origins.add("https://*.vercel.app");
+        origins.add("https://*.onrender.com");
         config.setAllowedOriginPatterns(origins);
 
         config.setAllowedMethods(List.of("GET","POST","PUT","DELETE","PATCH","OPTIONS"));

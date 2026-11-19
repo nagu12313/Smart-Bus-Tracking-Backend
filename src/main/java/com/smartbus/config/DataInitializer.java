@@ -52,31 +52,37 @@ public class DataInitializer implements CommandLineRunner {
             userRepository.findByEmail("mocktest@edutrack.com").ifPresent(userRepository::delete);
         } catch (Exception ignored) {}
 
-        Map<String, String[]> demoAccounts = Map.of(
-            "admin@edutrack.com",    new String[]{"Administrator", "admin123", "ADMIN"},
-            "driver@edutrack.com",   new String[]{"Ramesh Kumar", "driver123", "DRIVER"},
-            "parent@edutrack.com",   new String[]{"Priya Sharma", "parent123", "PARENT"},
-            "student@edutrack.com",  new String[]{"Ananya Sharma", "student123", "STUDENT"}
-        );
+        // Ensure Primary Admin account (bollanagu6868@gmail.com) exists and is active
+        userRepository.findByEmail("bollanagu6868@gmail.com").ifPresentOrElse(admin -> {
+            admin.setRole(Role.ADMIN);
+            admin.setIsActive(true);
+            userRepository.save(admin);
+            log.info("Primary admin account active: bollanagu6868@gmail.com");
+        }, () -> {
+            User primaryAdmin = User.builder()
+                    .name("Administrator")
+                    .email("bollanagu6868@gmail.com")
+                    .password(passwordEncoder.encode("admin123"))
+                    .role(Role.ADMIN)
+                    .isActive(true)
+                    .build();
+            userRepository.save(primaryAdmin);
+            log.info("Initialized primary admin account: bollanagu6868@gmail.com");
+        });
 
-        demoAccounts.forEach((email, details) -> {
-            userRepository.findByEmail(email).ifPresentOrElse(user -> {
-                // Ensure correct encoded password and role
-                user.setPassword(passwordEncoder.encode(details[1]));
-                user.setRole(Role.valueOf(details[2]));
-                user.setIsActive(true);
+        // Deactivate all demo accounts so they cannot be used to sign in
+        List<String> demoEmails = List.of(
+            "admin@edutrack.com",
+            "driver@edutrack.com",
+            "parent@edutrack.com",
+            "student@edutrack.com",
+            "mocktest@edutrack.com"
+        );
+        demoEmails.forEach(email -> {
+            userRepository.findByEmail(email).ifPresent(user -> {
+                user.setIsActive(false);
                 userRepository.save(user);
-                log.info("Verified demo account password for: {}", email);
-            }, () -> {
-                User newUser = User.builder()
-                        .name(details[0])
-                        .email(email)
-                        .password(passwordEncoder.encode(details[1]))
-                        .role(Role.valueOf(details[2]))
-                        .isActive(true)
-                        .build();
-                userRepository.save(newUser);
-                log.info("Created demo account: {}", email);
+                log.info("Disabled demo account from sign in: {}", email);
             });
         });
 
